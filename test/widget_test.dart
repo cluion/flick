@@ -1,7 +1,7 @@
 import 'package:bridra_flutter/bridra_flutter.dart';
 import 'package:flick/api/backend_gateway.dart';
 import 'package:flick/app/flick_app.dart';
-import 'package:flutter/material.dart' show Size;
+import 'package:flutter/material.dart' show Icons, Size;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -119,6 +119,8 @@ void main() {
     expect(find.text('本機引擎就緒'), findsOneWidget);
     expect(find.text('改名規則'), findsOneWidget);
     expect(find.text('1. 設定新檔名'), findsOneWidget);
+    expect(find.byIcon(Icons.drag_indicator_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.drag_handle), findsNothing);
     expect(find.text('拖放檔案或資料夾到這裡'), findsOneWidget);
     expect(find.text('選擇資料夾'), findsOneWidget);
     expect(find.text('開始批次改名'), findsOneWidget);

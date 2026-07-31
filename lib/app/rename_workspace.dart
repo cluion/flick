@@ -725,6 +725,7 @@ class _RulesPanel extends StatelessWidget {
             child: rules.isEmpty
                 ? _EmptyRules(onAdd: enabled ? onAdd : null)
                 : ReorderableListView.builder(
+                    buildDefaultDragHandles: false,
                     padding: const EdgeInsets.all(12),
                     itemCount: rules.length,
                     onReorderItem: enabled ? onReorder : (_, _) {},
