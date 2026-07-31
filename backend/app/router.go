@@ -21,6 +21,8 @@ func NewRouterWithFileTransfers(
 ) *framework.Router {
 	renameService := services.NewRenameService()
 	renameController := controllers.NewRenameController(renameService)
+	fileDiscoveryService := services.NewFileDiscoveryService()
+	fileController := controllers.NewFileController(fileDiscoveryService)
 	systemController := controllers.NewSystemController(runtime)
 
 	container := framework.NewContainer()
@@ -49,6 +51,7 @@ func NewRouterWithFileTransfers(
 	}
 	router.Use(middlewares...)
 	router.Handle(contracts.MethodSystemHealth, systemController.Health)
+	router.Handle(contracts.MethodFilesScan, fileController.Scan)
 	router.Handle(contracts.MethodRenamePreview, renameController.Preview)
 	router.Handle(contracts.MethodRenameApply, renameController.Apply)
 	router.Handle(contracts.MethodRenameUndo, renameController.Undo)

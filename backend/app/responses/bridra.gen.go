@@ -10,6 +10,11 @@ type HealthResponse struct {
 	Architecture     string `json:"architecture"`
 }
 
+type ScanDirectoriesResponse struct {
+	Paths        []string `json:"paths"`
+	SkippedCount int      `json:"skippedCount"`
+}
+
 type RenamePlanResponse struct {
 	PlanId          string   `json:"planId"`
 	SourcePaths     []string `json:"sourcePaths"`

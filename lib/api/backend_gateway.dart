@@ -57,6 +57,14 @@ class RpcBackend implements BackendGateway {
   }
 
   @override
+  Future<DirectoryScanResult> scanDirectories(
+    ScanDirectoriesRequest request, {
+    RpcCancellationToken? cancellationToken,
+  }) {
+    return _api.scanDirectories(request, cancellationToken: cancellationToken);
+  }
+
+  @override
   Future<RenamePlan> previewRename(
     PreviewRenameRequest request, {
     RpcCancellationToken? cancellationToken,

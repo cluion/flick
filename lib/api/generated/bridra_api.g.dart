@@ -6,6 +6,7 @@ const supportedBackendProtocolVersion = 1;
 
 abstract final class BridraMethods {
   static const systemHealth = 'system.health';
+  static const filesScan = 'files.scan';
   static const renamePreview = 'rename.preview';
   static const renameApply = 'rename.apply';
   static const renameUndo = 'rename.undo';
@@ -26,6 +27,34 @@ class HealthInfo {
   final int protocolVersion;
   final String runtime;
   final String architecture;
+}
+
+class ScanDirectoriesRequest {
+  const ScanDirectoriesRequest({
+    required this.directories,
+    required this.recursive,
+    required this.patterns,
+    required this.includeHidden,
+  });
+
+  final List<String> directories;
+  final bool recursive;
+  final List<String> patterns;
+  final bool includeHidden;
+
+  Map<String, Object?> toJson() => {
+    'directories': directories,
+    'recursive': recursive,
+    'patterns': patterns,
+    'includeHidden': includeHidden,
+  };
+}
+
+class DirectoryScanResult {
+  const DirectoryScanResult({required this.paths, required this.skippedCount});
+
+  final List<String> paths;
+  final int skippedCount;
 }
 
 class PreviewRenameRequest {
@@ -122,6 +151,10 @@ class RenameHistory {
 
 abstract interface class BridraApi {
   Future<HealthInfo> health({RpcCancellationToken? cancellationToken});
+  Future<DirectoryScanResult> scanDirectories(
+    ScanDirectoriesRequest request, {
+    RpcCancellationToken? cancellationToken,
+  });
   Future<RenamePlan> previewRename(
     PreviewRenameRequest request, {
     RpcCancellationToken? cancellationToken,
@@ -162,6 +195,32 @@ class BridraRpcApi implements BridraApi {
     } on Object catch (error) {
       throw BackendProtocolException(
         'The system.health response does not match the protocol.',
+        cause: error,
+      );
+    }
+  }
+
+  @override
+  Future<DirectoryScanResult> scanDirectories(
+    ScanDirectoriesRequest request, {
+    RpcCancellationToken? cancellationToken,
+  }) async {
+    final reply = await _client.call(
+      BridraMethods.filesScan,
+      params: request.toJson(),
+      cancellationToken: cancellationToken,
+    );
+    try {
+      final result = _requireMap(reply.result, 'files.scan result');
+      return DirectoryScanResult(
+        paths: _requireListField<String>(result, 'paths'),
+        skippedCount: _requireField<int>(result, 'skippedCount'),
+      );
+    } on BackendProtocolException {
+      rethrow;
+    } on Object catch (error) {
+      throw BackendProtocolException(
+        'The files.scan response does not match the protocol.',
         cause: error,
       );
     }

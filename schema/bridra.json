@@ -18,6 +18,28 @@
       }
     },
     {
+      "name": "files.scan",
+      "clientName": "scanDirectories",
+      "params": {
+        "goType": "ScanDirectoriesRequest",
+        "dartType": "ScanDirectoriesRequest",
+        "fields": [
+          {"name": "directories", "type": "string", "array": true},
+          {"name": "recursive", "type": "boolean"},
+          {"name": "patterns", "type": "string", "array": true},
+          {"name": "includeHidden", "type": "boolean"}
+        ]
+      },
+      "result": {
+        "goType": "ScanDirectoriesResponse",
+        "dartType": "DirectoryScanResult",
+        "fields": [
+          {"name": "paths", "type": "string", "array": true},
+          {"name": "skippedCount", "type": "integer"}
+        ]
+      }
+    },
+    {
       "name": "rename.preview",
       "clientName": "previewRename",
       "params": {

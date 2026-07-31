@@ -6,6 +6,17 @@ import (
 	"github.com/cluion/bridra/backend/framework"
 )
 
+type ScanDirectoriesRequest struct {
+	Directories   []string `json:"directories"`
+	Recursive     bool     `json:"recursive"`
+	Patterns      []string `json:"patterns"`
+	IncludeHidden bool     `json:"includeHidden"`
+}
+
+func (ScanDirectoriesRequest) ValidatePayload(payload []byte) error {
+	return framework.ValidateRequestPayload[ScanDirectoriesRequest](payload)
+}
+
 type PreviewRenameRequest struct {
 	Paths  []string `json:"paths"`
 	Recipe string   `json:"recipe"`

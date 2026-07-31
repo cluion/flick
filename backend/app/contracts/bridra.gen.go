@@ -4,10 +4,13 @@ package contracts
 
 const (
 	RouteGroupSystem = "system"
+	RouteGroupFiles  = "files"
 	RouteGroupRename = "rename"
 
 	MethodSystemHealth       = "system.health"
 	RouteActionSystemHealth  = "health"
+	MethodFilesScan          = "files.scan"
+	RouteActionFilesScan     = "scan"
 	MethodRenamePreview      = "rename.preview"
 	RouteActionRenamePreview = "preview"
 	MethodRenameApply        = "rename.apply"

@@ -7,17 +7,18 @@ and undo.
 
 ## Current MVP
 
-- Add files through a native picker or drag and drop
-- Combine ordered replace, prefix, suffix, case, sequence, and trim rules
+- Add files or scan folders through native pickers and drag and drop
+- Filter folder scans with wildcard patterns and optional subfolder traversal
+- Combine ordered new-name, replace, prefix, suffix, case, sequence, and trim rules
 - Preview every resulting name without touching the filesystem
 - Detect duplicate names, existing targets, invalid names, and stale files
 - Apply a batch through temporary names so swaps and case-only renames are safe
 - Persist a local batch journal and undo completed batches
 - Restore the last rule recipe automatically
 
-The MVP renames regular files in place. Folder renaming, EXIF/ID3/video tags,
-copy and move modes, JavaScript rules, GPS naming, and CLI automation are
-planned follow-up work.
+The MVP renames regular files in place. Folder contents can be imported, but
+folder renaming, EXIF/ID3/video tags, copy and move modes, JavaScript rules, GPS
+naming, and CLI automation are planned follow-up work.
 
 ## Safety model
 

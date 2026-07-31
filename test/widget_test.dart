@@ -21,6 +21,14 @@ class FakeBackend implements BackendGateway {
   }
 
   @override
+  Future<DirectoryScanResult> scanDirectories(
+    ScanDirectoriesRequest request, {
+    RpcCancellationToken? cancellationToken,
+  }) async {
+    return const DirectoryScanResult(paths: [], skippedCount: 0);
+  }
+
+  @override
   Future<RenameHistory> renameHistory({
     RpcCancellationToken? cancellationToken,
   }) async {
@@ -111,7 +119,13 @@ void main() {
     expect(find.text('本機引擎就緒'), findsOneWidget);
     expect(find.text('改名規則'), findsOneWidget);
     expect(find.text('1. 設定新檔名'), findsOneWidget);
-    expect(find.text('拖放檔案到這裡'), findsOneWidget);
+    expect(find.text('拖放檔案或資料夾到這裡'), findsOneWidget);
+    expect(find.text('選擇資料夾'), findsOneWidget);
     expect(find.text('開始批次改名'), findsOneWidget);
+
+    await tester.tap(find.text('加入'));
+    await tester.pumpAndSettle();
+    expect(find.text('加入檔案'), findsOneWidget);
+    expect(find.text('加入資料夾'), findsOneWidget);
   });
 }

@@ -1,16 +1,20 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:bridra_flutter/bridra_flutter.dart' show RpcException;
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/backend_gateway.dart';
+import '../domain/directory_import_options.dart';
 import '../domain/rename_rule.dart';
 import 'flick_app.dart';
 
 const _savedRulesKey = 'flick.rename-rules.v2';
+const _maxRenameItems = 10000;
 
 class RenameWorkspace extends StatefulWidget {
   const RenameWorkspace({super.key, required this.connector});
@@ -34,6 +38,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   var _connecting = true;
   var _previewing = false;
   var _previewFailed = false;
+  var _scanning = false;
   var _applying = false;
   var _dragging = false;
   var _previewGeneration = 0;
@@ -98,15 +103,106 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     }
   }
 
-  void _addPaths(Iterable<String> paths) {
+  Future<void> _chooseDirectory() async {
+    try {
+      final directory = await getDirectoryPath(
+        confirmButtonText: '加入資料夾',
+        canCreateDirectories: false,
+      );
+      if (directory != null && mounted) {
+        await _configureAndScanDirectories([directory]);
+      }
+    } on Object catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  Future<void> _handleDroppedItems(List<XFile> items) async {
+    final files = <String>[];
+    final directories = <String>[];
+    var unsupportedCount = 0;
+    try {
+      for (final item in items) {
+        final type = await FileSystemEntity.type(item.path, followLinks: false);
+        switch (type) {
+          case FileSystemEntityType.file:
+            files.add(item.path);
+          case FileSystemEntityType.directory:
+            directories.add(item.path);
+          default:
+            unsupportedCount++;
+        }
+      }
+    } on Object catch (error) {
+      if (mounted) setState(() => _error = error);
+      return;
+    }
+    if (!mounted) return;
+    if (files.isNotEmpty) {
+      _addPaths(
+        files,
+        notice: unsupportedCount == 0 ? null : '已略過 $unsupportedCount 個不支援的項目',
+      );
+    } else if (unsupportedCount > 0) {
+      setState(() => _notice = '已略過 $unsupportedCount 個不支援的項目');
+    }
+    if (directories.isNotEmpty && mounted) {
+      await _configureAndScanDirectories(directories);
+    }
+  }
+
+  Future<void> _configureAndScanDirectories(List<String> directories) async {
+    final options = await showDialog<DirectoryImportOptions>(
+      context: context,
+      builder: (context) =>
+          _DirectoryImportDialog(directoryCount: directories.length),
+    );
+    if (options == null || !mounted) return;
+    final backend = _backend;
+    if (backend == null) return;
+
+    setState(() {
+      _scanning = true;
+      _error = null;
+      _notice = null;
+    });
+    try {
+      final result = await backend.scanDirectories(
+        ScanDirectoriesRequest(
+          directories: directories,
+          recursive: options.recursive,
+          patterns: options.patterns,
+          includeHidden: options.includeHidden,
+        ),
+      );
+      if (!mounted) return;
+      final notice = result.paths.isEmpty
+          ? '資料夾內沒有符合條件的檔案'
+          : '掃描完成：找到 ${result.paths.length} 個檔案'
+                '${result.skippedCount == 0 ? '' : '，略過 ${result.skippedCount} 個項目'}';
+      _addPaths(result.paths, notice: notice);
+    } on Object catch (error) {
+      if (mounted) setState(() => _error = error);
+    } finally {
+      if (mounted) setState(() => _scanning = false);
+    }
+  }
+
+  void _addPaths(Iterable<String> paths, {String? notice}) {
     final combined = <String>[..._paths];
     final known = combined.toSet();
     for (final path in paths) {
       if (path.isNotEmpty && known.add(path)) combined.add(path);
     }
+    if (combined.length > _maxRenameItems) {
+      setState(() {
+        _error = '一次最多只能預覽 $_maxRenameItems 個檔案，請縮小資料夾範圍或使用檔案篩選';
+      });
+      return;
+    }
     setState(() {
       _paths = List.unmodifiable(combined);
-      _notice = null;
+      _notice = notice;
       _error = null;
     });
     _schedulePreview(immediate: true);
@@ -320,7 +416,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                 connected: connected,
                 connecting: _connecting,
                 canUndo: canUndo,
-                busy: _applying,
+                busy: _applying || _scanning,
                 onUndo: _undoLatest,
               ),
               if (_error != null)
@@ -342,7 +438,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                   builder: (context, constraints) {
                     final rules = _RulesPanel(
                       rules: _rules,
-                      enabled: connected && !_applying,
+                      enabled: connected && !_applying && !_scanning,
                       onAdd: _addRule,
                       onUpdate: _updateRule,
                       onRemove: _removeRule,
@@ -355,8 +451,10 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                       previewing: _previewing,
                       previewFailed: _previewFailed,
                       applying: _applying,
+                      scanning: _scanning,
                       dragging: _dragging,
                       onChooseFiles: _chooseFiles,
+                      onChooseDirectory: _chooseDirectory,
                       onRemovePath: _removePath,
                       onClearPaths: _clearPaths,
                       onApply: _apply,
@@ -364,7 +462,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                       onDragExited: () => setState(() => _dragging = false),
                       onDrop: (files) {
                         setState(() => _dragging = false);
-                        _addPaths(files.map((file) => file.path));
+                        unawaited(_handleDroppedItems(files));
                       },
                     );
                     if (constraints.maxWidth >= 900) {
@@ -924,6 +1022,93 @@ class _RuleFields extends StatelessWidget {
   }
 }
 
+class _DirectoryImportDialog extends StatefulWidget {
+  const _DirectoryImportDialog({required this.directoryCount});
+
+  final int directoryCount;
+
+  @override
+  State<_DirectoryImportDialog> createState() => _DirectoryImportDialogState();
+}
+
+class _DirectoryImportDialogState extends State<_DirectoryImportDialog> {
+  final _patternsController = TextEditingController();
+  var _recursive = false;
+  var _includeHidden = false;
+
+  @override
+  void dispose() {
+    _patternsController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: surfaceRaised,
+      title: const Text('匯入資料夾'),
+      content: SizedBox(
+        width: 430,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '將掃描 ${widget.directoryCount} 個資料夾，只加入普通檔案。掃描本身不會修改檔案。',
+              style: const TextStyle(color: muted, fontSize: 13),
+            ),
+            const SizedBox(height: 18),
+            TextFormField(
+              controller: _patternsController,
+              decoration: const InputDecoration(
+                labelText: '檔案篩選',
+                hintText: '*.jpg;*.png',
+                helperText: '可用分號或逗號分隔；留白表示全部檔案',
+              ),
+            ),
+            const SizedBox(height: 10),
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _recursive,
+              title: const Text('包含子資料夾'),
+              subtitle: const Text('不會跟隨 symbolic link'),
+              onChanged: (value) => setState(() => _recursive = value ?? false),
+            ),
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _includeHidden,
+              title: const Text('包含隱藏檔'),
+              subtitle: const Text('包含名稱以 . 開頭的檔案與資料夾'),
+              onChanged: (value) =>
+                  setState(() => _includeHidden = value ?? false),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton.icon(
+          onPressed: () => Navigator.pop(
+            context,
+            DirectoryImportOptions(
+              recursive: _recursive,
+              includeHidden: _includeHidden,
+              patterns: parseDirectoryPatterns(_patternsController.text),
+            ),
+          ),
+          icon: const Icon(Icons.folder_open_rounded, size: 18),
+          label: const Text('開始掃描'),
+        ),
+      ],
+    );
+  }
+}
+
+enum _AddSource { files, directory }
+
 class _PreviewPanel extends StatelessWidget {
   const _PreviewPanel({
     required this.paths,
@@ -932,8 +1117,10 @@ class _PreviewPanel extends StatelessWidget {
     required this.previewing,
     required this.previewFailed,
     required this.applying,
+    required this.scanning,
     required this.dragging,
     required this.onChooseFiles,
+    required this.onChooseDirectory,
     required this.onRemovePath,
     required this.onClearPaths,
     required this.onApply,
@@ -948,8 +1135,10 @@ class _PreviewPanel extends StatelessWidget {
   final bool previewing;
   final bool previewFailed;
   final bool applying;
+  final bool scanning;
   final bool dragging;
   final VoidCallback onChooseFiles;
+  final VoidCallback onChooseDirectory;
   final ValueChanged<String> onRemovePath;
   final VoidCallback onClearPaths;
   final VoidCallback onApply;
@@ -975,6 +1164,7 @@ class _PreviewPanel extends StatelessWidget {
         currentPlan.errorCount == 0 &&
         currentPlan.renameableCount > 0 &&
         !previewing &&
+        !scanning &&
         !applying;
 
     return DropTarget(
@@ -1018,25 +1208,28 @@ class _PreviewPanel extends StatelessWidget {
                   ),
                   if (paths.isNotEmpty)
                     TextButton(
-                      onPressed: applying ? null : onClearPaths,
+                      onPressed: applying || scanning ? null : onClearPaths,
                       child: const Text('全部清除'),
                     ),
                   const SizedBox(width: 6),
-                  OutlinedButton.icon(
-                    onPressed: connected && !applying ? onChooseFiles : null,
-                    icon: const Icon(Icons.add_rounded, size: 18),
-                    label: const Text('加入檔案'),
+                  _AddItemsMenu(
+                    enabled: connected && !applying && !scanning,
+                    onChooseFiles: onChooseFiles,
+                    onChooseDirectory: onChooseDirectory,
                   ),
                 ],
               ),
             ),
-            if (previewing) const LinearProgressIndicator(minHeight: 2),
+            if (previewing || scanning)
+              const LinearProgressIndicator(minHeight: 2),
             Expanded(
               child: paths.isEmpty
                   ? _DropEmptyState(
                       connected: connected,
+                      scanning: scanning,
                       dragging: dragging,
                       onChooseFiles: onChooseFiles,
+                      onChooseDirectory: onChooseDirectory,
                     )
                   : Column(
                       children: [
@@ -1057,7 +1250,7 @@ class _PreviewPanel extends StatelessWidget {
                                 status: currentPlan?.statuses[index],
                                 message: currentPlan?.messages[index],
                                 previewFailed: previewFailed,
-                                onRemove: applying
+                                onRemove: applying || scanning
                                     ? null
                                     : () => onRemovePath(sourcePath),
                               );
@@ -1070,6 +1263,7 @@ class _PreviewPanel extends StatelessWidget {
             _ActionBar(
               plan: currentPlan,
               applying: applying,
+              scanning: scanning,
               canApply: canApply,
               onApply: onApply,
             ),
@@ -1080,16 +1274,87 @@ class _PreviewPanel extends StatelessWidget {
   }
 }
 
+class _AddItemsMenu extends StatelessWidget {
+  const _AddItemsMenu({
+    required this.enabled,
+    required this.onChooseFiles,
+    required this.onChooseDirectory,
+  });
+
+  final bool enabled;
+  final VoidCallback onChooseFiles;
+  final VoidCallback onChooseDirectory;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = enabled ? const Color(0xFFD5D8E1) : muted;
+    return PopupMenuButton<_AddSource>(
+      enabled: enabled,
+      tooltip: '加入檔案或資料夾',
+      onSelected: (source) {
+        switch (source) {
+          case _AddSource.files:
+            onChooseFiles();
+          case _AddSource.directory:
+            onChooseDirectory();
+        }
+      },
+      itemBuilder: (context) => const [
+        PopupMenuItem(
+          value: _AddSource.files,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.insert_drive_file_outlined),
+            title: Text('加入檔案'),
+          ),
+        ),
+        PopupMenuItem(
+          value: _AddSource.directory,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.folder_open_outlined),
+            title: Text('加入資料夾'),
+          ),
+        ),
+      ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 9),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: enabled ? const Color(0xFF3A4050) : border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.add_rounded, size: 18, color: color),
+            const SizedBox(width: 7),
+            Text(
+              '加入',
+              style: TextStyle(color: color, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(width: 3),
+            Icon(Icons.arrow_drop_down_rounded, size: 18, color: color),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _DropEmptyState extends StatelessWidget {
   const _DropEmptyState({
     required this.connected,
+    required this.scanning,
     required this.dragging,
     required this.onChooseFiles,
+    required this.onChooseDirectory,
   });
 
   final bool connected;
+  final bool scanning;
   final bool dragging;
   final VoidCallback onChooseFiles;
+  final VoidCallback onChooseDirectory;
 
   @override
   Widget build(BuildContext context) {
@@ -1120,7 +1385,7 @@ class _DropEmptyState extends StatelessWidget {
             ),
             const SizedBox(height: 18),
             Text(
-              dragging ? '放開即可加入檔案' : '拖放檔案到這裡',
+              dragging ? '放開即可加入' : '拖放檔案或資料夾到這裡',
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 8),
@@ -1130,10 +1395,22 @@ class _DropEmptyState extends StatelessWidget {
               style: TextStyle(color: muted),
             ),
             const SizedBox(height: 22),
-            FilledButton.icon(
-              onPressed: connected ? onChooseFiles : null,
-              icon: const Icon(Icons.add_rounded, size: 18),
-              label: const Text('選擇檔案'),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              alignment: WrapAlignment.center,
+              children: [
+                FilledButton.icon(
+                  onPressed: connected && !scanning ? onChooseFiles : null,
+                  icon: const Icon(Icons.add_rounded, size: 18),
+                  label: const Text('選擇檔案'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: connected && !scanning ? onChooseDirectory : null,
+                  icon: const Icon(Icons.folder_open_outlined, size: 18),
+                  label: const Text('選擇資料夾'),
+                ),
+              ],
             ),
           ],
         ),
@@ -1289,12 +1566,14 @@ class _ActionBar extends StatelessWidget {
   const _ActionBar({
     required this.plan,
     required this.applying,
+    required this.scanning,
     required this.canApply,
     required this.onApply,
   });
 
   final RenamePlan? plan;
   final bool applying;
+  final bool scanning;
   final bool canApply;
   final VoidCallback onApply;
 
@@ -1330,13 +1609,13 @@ class _ActionBar extends StatelessWidget {
           const Spacer(),
           FilledButton.icon(
             onPressed: canApply ? onApply : null,
-            icon: applying
+            icon: applying || scanning
                 ? const SizedBox.square(
                     dimension: 17,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.play_arrow_rounded, size: 19),
-            label: Text(applying ? '正在套用…' : '開始批次改名'),
+            label: Text(scanning ? '正在掃描…' : (applying ? '正在套用…' : '開始批次改名')),
           ),
         ],
       ),
@@ -1376,6 +1655,18 @@ class _CountBadge extends StatelessWidget {
 }
 
 String _friendlyError(Object error) {
+  if (error is RpcException) {
+    return switch (error.code) {
+      'invalid_pattern' => '檔案篩選格式不正確，請使用例如 *.jpg;*.png',
+      'too_many_items' => '檔案超過 $_maxRenameItems 個，請縮小資料夾範圍或使用檔案篩選',
+      'empty_directories' => '請先選擇要掃描的資料夾',
+      'invalid_directory' ||
+      'directory_unavailable' ||
+      'directory_required' => '無法讀取選取的資料夾',
+      'invalid_rule' => '規則設定不完整，請檢查左側欄位',
+      _ => error.message,
+    };
+  }
   final text = error.toString();
   const prefix = 'BackendProtocolException: ';
   if (text.startsWith(prefix)) return text.substring(prefix.length);
