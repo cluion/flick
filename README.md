@@ -10,6 +10,7 @@ and undo.
 - Add files or scan folders through native pickers and drag and drop
 - Filter folder scans with wildcard patterns and optional subfolder traversal
 - Combine ordered new-name, replace, prefix, suffix, case, sequence, and trim rules
+- Target the name, extension, or both with case-sensitive and RE2 regular-expression replacement
 - Preview every resulting name without touching the filesystem
 - Detect duplicate names, existing targets, invalid names, and stale files
 - Apply a batch through temporary names so swaps and case-only renames are safe

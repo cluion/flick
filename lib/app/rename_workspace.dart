@@ -903,122 +903,205 @@ class _RuleFields extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    switch (rule.type) {
-      case RenameRuleType.newName:
-        return TextFormField(
-          key: ValueKey('${rule.id}-value'),
-          initialValue: rule.value,
-          enabled: enabled,
-          decoration: const InputDecoration(
-            labelText: '新檔名',
-            hintText: '例如 假期-{n}',
-            helperText: '副檔名會保留；{name} 是原檔名，{n} 是流水號',
-          ),
-          onChanged: (value) => onChanged(rule.copyWith(value: value)),
-        );
-      case RenameRuleType.replace:
-        return Column(
-          children: [
-            TextFormField(
-              key: ValueKey('${rule.id}-find'),
-              initialValue: rule.value,
-              enabled: enabled,
-              decoration: const InputDecoration(
-                labelText: '尋找',
-                hintText: '例如 IMG_',
-              ),
-              onChanged: (value) => onChanged(rule.copyWith(value: value)),
+    final fields = switch (rule.type) {
+      RenameRuleType.newName => TextFormField(
+        key: ValueKey('${rule.id}-value'),
+        initialValue: rule.value,
+        enabled: enabled,
+        decoration: const InputDecoration(
+          labelText: '新檔名',
+          hintText: '例如 假期-{n}',
+          helperText: '可使用 {name} 與 {n}；預設不變更副檔名',
+        ),
+        onChanged: (value) => onChanged(rule.copyWith(value: value)),
+      ),
+      RenameRuleType.replace => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextFormField(
+            key: ValueKey('${rule.id}-find'),
+            initialValue: rule.value,
+            enabled: enabled,
+            decoration: const InputDecoration(
+              labelText: '尋找',
+              hintText: '例如 IMG_',
             ),
-            const SizedBox(height: 9),
-            TextFormField(
-              key: ValueKey('${rule.id}-replace'),
-              initialValue: rule.replacement,
-              enabled: enabled,
-              decoration: const InputDecoration(
-                labelText: '取代為',
-                hintText: '留白表示刪除',
-              ),
-              onChanged: (value) =>
-                  onChanged(rule.copyWith(replacement: value)),
-            ),
-          ],
-        );
-      case RenameRuleType.prefix:
-      case RenameRuleType.suffix:
-        return TextFormField(
-          key: ValueKey('${rule.id}-value'),
-          initialValue: rule.value,
-          enabled: enabled,
-          decoration: InputDecoration(
-            labelText: rule.type == RenameRuleType.prefix ? '前綴' : '後綴',
-            hintText: rule.type == RenameRuleType.prefix
-                ? '例如 Project-'
-                : '例如 -final',
+            onChanged: (value) => onChanged(rule.copyWith(value: value)),
           ),
-          onChanged: (value) => onChanged(rule.copyWith(value: value)),
-        );
-      case RenameRuleType.letterCase:
-        return DropdownButtonFormField<String>(
-          key: ValueKey('${rule.id}-mode'),
-          initialValue: rule.mode,
-          decoration: const InputDecoration(labelText: '格式'),
-          items: const [
-            DropdownMenuItem(value: 'lower', child: Text('全部小寫')),
-            DropdownMenuItem(value: 'upper', child: Text('全部大寫')),
-            DropdownMenuItem(value: 'title', child: Text('每個單字首字大寫')),
-          ],
+          const SizedBox(height: 9),
+          TextFormField(
+            key: ValueKey('${rule.id}-replace'),
+            initialValue: rule.replacement,
+            enabled: enabled,
+            decoration: const InputDecoration(
+              labelText: '取代為',
+              hintText: '留白表示刪除',
+            ),
+            onChanged: (value) => onChanged(rule.copyWith(replacement: value)),
+          ),
+          const SizedBox(height: 7),
+          _RuleOption(
+            label: '區分大小寫',
+            value: rule.caseSensitive,
+            enabled: enabled,
+            onChanged: (value) =>
+                onChanged(rule.copyWith(caseSensitive: value)),
+          ),
+          _RuleOption(
+            label: '使用正規表示式',
+            value: rule.useRegex,
+            enabled: enabled,
+            onChanged: (value) => onChanged(rule.copyWith(useRegex: value)),
+          ),
+          if (rule.useRegex)
+            const Padding(
+              padding: EdgeInsets.only(left: 4, top: 2),
+              child: Text(
+                r'使用 RE2 語法；群組取代可輸入 \1、\2',
+                style: TextStyle(color: subtle, fontSize: 11),
+              ),
+            ),
+        ],
+      ),
+      RenameRuleType.prefix || RenameRuleType.suffix => TextFormField(
+        key: ValueKey('${rule.id}-value'),
+        initialValue: rule.value,
+        enabled: enabled,
+        decoration: InputDecoration(
+          labelText: rule.type == RenameRuleType.prefix ? '前綴' : '後綴',
+          hintText: rule.type == RenameRuleType.prefix
+              ? '例如 Project-'
+              : '例如 -final',
+        ),
+        onChanged: (value) => onChanged(rule.copyWith(value: value)),
+      ),
+      RenameRuleType.letterCase => DropdownButtonFormField<String>(
+        key: ValueKey('${rule.id}-mode'),
+        initialValue: rule.mode,
+        decoration: const InputDecoration(labelText: '格式'),
+        items: const [
+          DropdownMenuItem(value: 'lower', child: Text('全部小寫')),
+          DropdownMenuItem(value: 'upper', child: Text('全部大寫')),
+          DropdownMenuItem(value: 'title', child: Text('每個單字首字大寫')),
+        ],
+        onChanged: enabled
+            ? (mode) {
+                if (mode != null) onChanged(rule.copyWith(mode: mode));
+              }
+            : null,
+      ),
+      RenameRuleType.sequence => Row(
+        children: [
+          Expanded(
+            child: TextFormField(
+              key: ValueKey('${rule.id}-start'),
+              initialValue: rule.start.toString(),
+              enabled: enabled,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: '起始數字'),
+              onChanged: (value) => onChanged(
+                rule.copyWith(start: int.tryParse(value) ?? rule.start),
+              ),
+            ),
+          ),
+          const SizedBox(width: 9),
+          Expanded(
+            child: DropdownButtonFormField<int>(
+              key: ValueKey('${rule.id}-padding'),
+              initialValue: rule.padding,
+              decoration: const InputDecoration(labelText: '位數'),
+              items: const [
+                DropdownMenuItem(value: 1, child: Text('1')),
+                DropdownMenuItem(value: 2, child: Text('2')),
+                DropdownMenuItem(value: 3, child: Text('3')),
+                DropdownMenuItem(value: 4, child: Text('4')),
+                DropdownMenuItem(value: 5, child: Text('5')),
+                DropdownMenuItem(value: 6, child: Text('6')),
+              ],
+              onChanged: enabled
+                  ? (padding) {
+                      if (padding != null) {
+                        onChanged(rule.copyWith(padding: padding));
+                      }
+                    }
+                  : null,
+            ),
+          ),
+        ],
+      ),
+      RenameRuleType.trim => const Text(
+        '將移除所選範圍頭尾的半形與全形空白',
+        style: TextStyle(color: muted, fontSize: 12),
+      ),
+    };
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        fields,
+        const SizedBox(height: 10),
+        DropdownButtonFormField<RenameRuleTarget>(
+          key: ValueKey('${rule.id}-target'),
+          initialValue: rule.target,
+          decoration: const InputDecoration(labelText: '套用到'),
+          items: RenameRuleTarget.values
+              .map(
+                (target) =>
+                    DropdownMenuItem(value: target, child: Text(target.label)),
+              )
+              .toList(growable: false),
           onChanged: enabled
-              ? (mode) {
-                  if (mode != null) onChanged(rule.copyWith(mode: mode));
+              ? (target) {
+                  if (target != null) onChanged(rule.copyWith(target: target));
                 }
               : null,
-        );
-      case RenameRuleType.sequence:
-        return Row(
+        ),
+        if (rule.target == RenameRuleTarget.extension)
+          const Padding(
+            padding: EdgeInsets.only(left: 4, top: 5),
+            child: Text(
+              '副檔名不包含句點，例如 jpg',
+              style: TextStyle(color: subtle, fontSize: 11),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _RuleOption extends StatelessWidget {
+  const _RuleOption({
+    required this.label,
+    required this.value,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final String label;
+  final bool value;
+  final bool enabled;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: enabled ? () => onChanged(!value) : null,
+      borderRadius: BorderRadius.circular(7),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
           children: [
-            Expanded(
-              child: TextFormField(
-                key: ValueKey('${rule.id}-start'),
-                initialValue: rule.start.toString(),
-                enabled: enabled,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: '起始數字'),
-                onChanged: (value) => onChanged(
-                  rule.copyWith(start: int.tryParse(value) ?? rule.start),
-                ),
-              ),
+            Checkbox(
+              value: value,
+              onChanged: enabled
+                  ? (checked) => onChanged(checked ?? false)
+                  : null,
+              visualDensity: VisualDensity.compact,
             ),
-            const SizedBox(width: 9),
-            Expanded(
-              child: DropdownButtonFormField<int>(
-                key: ValueKey('${rule.id}-padding'),
-                initialValue: rule.padding,
-                decoration: const InputDecoration(labelText: '位數'),
-                items: const [
-                  DropdownMenuItem(value: 1, child: Text('1')),
-                  DropdownMenuItem(value: 2, child: Text('2')),
-                  DropdownMenuItem(value: 3, child: Text('3')),
-                  DropdownMenuItem(value: 4, child: Text('4')),
-                  DropdownMenuItem(value: 5, child: Text('5')),
-                  DropdownMenuItem(value: 6, child: Text('6')),
-                ],
-                onChanged: enabled
-                    ? (padding) {
-                        if (padding != null) {
-                          onChanged(rule.copyWith(padding: padding));
-                        }
-                      }
-                    : null,
-              ),
-            ),
+            Text(label, style: const TextStyle(fontSize: 12)),
           ],
-        );
-      case RenameRuleType.trim:
-        return const Text(
-          '將移除主檔名頭尾的半形與全形空白',
-          style: TextStyle(color: muted, fontSize: 12),
-        );
-    }
+        ),
+      ),
+    );
   }
 }
 
@@ -1664,6 +1747,7 @@ String _friendlyError(Object error) {
       'directory_unavailable' ||
       'directory_required' => '無法讀取選取的資料夾',
       'invalid_rule' => '規則設定不完整，請檢查左側欄位',
+      'invalid_regex' => '正規表示式格式不正確，請檢查「尋找」欄位',
       _ => error.message,
     };
   }

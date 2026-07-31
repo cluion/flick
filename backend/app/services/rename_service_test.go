@@ -86,6 +86,100 @@ func TestRenameServiceNewNamePreservesExtensionAndExpandsPlaceholders(t *testing
 	}
 }
 
+func TestRenameServiceSupportsAdvancedReplaceOptions(t *testing.T) {
+	tests := []struct {
+		name         string
+		originalName string
+		recipe       string
+		want         string
+	}{
+		{
+			name:         "case insensitive literal",
+			originalName: "Photo-PHOTO.JPG",
+			recipe: `{"rules":[{"type":"replace","enabled":true,` +
+				`"value":"photo","replacement":"image",` +
+				`"caseSensitive":false}]}`,
+			want: "image-image.JPG",
+		},
+		{
+			name:         "regular expression groups",
+			originalName: "Michael Jackson - Thriller.mp3",
+			recipe: `{"rules":[{"type":"replace","enabled":true,` +
+				`"value":"(.*) - (.*)","replacement":"\\2 - \\1",` +
+				`"useRegex":true}]}`,
+			want: "Thriller - Michael Jackson.mp3",
+		},
+		{
+			name:         "extension only",
+			originalName: "photo.JPG",
+			recipe: `{"rules":[{"type":"newName","enabled":true,` +
+				`"value":"jpeg","applyTo":"extension"}]}`,
+			want: "photo.jpeg",
+		},
+		{
+			name:         "name and extension",
+			originalName: "Holiday.JPG",
+			recipe: `{"rules":[{"type":"case","enabled":true,` +
+				`"mode":"lower","applyTo":"both"}]}`,
+			want: "holiday.jpg",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			source := writeRenameFixture(t, directory, test.originalName, "fixture")
+			service := NewRenameServiceAt(filepath.Join(directory, "history.json"))
+
+			plan, err := service.Preview([]string{source}, test.recipe)
+			if err != nil {
+				t.Fatalf("preview: %v", err)
+			}
+			if got := plan.Items[0].ProposedName; got != test.want {
+				t.Fatalf("proposed name = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRenameServiceRejectsInvalidRegularExpression(t *testing.T) {
+	directory := t.TempDir()
+	source := writeRenameFixture(t, directory, "draft.txt", "fixture")
+	service := NewRenameServiceAt(filepath.Join(directory, "history.json"))
+
+	_, err := service.Preview(
+		[]string{source},
+		`{"rules":[{"type":"replace","enabled":true,`+
+			`"value":"([","useRegex":true}]}`,
+	)
+	if err == nil {
+		t.Fatal("preview succeeded with an invalid regular expression")
+	}
+	var userError *RenameUserError
+	if !errors.As(err, &userError) || userError.Code != "invalid_regex" {
+		t.Fatalf("preview error = %v", err)
+	}
+}
+
+func TestRenameServiceDetectsExtensionRenameCollision(t *testing.T) {
+	directory := t.TempDir()
+	jpg := writeRenameFixture(t, directory, "photo.jpg", "jpg")
+	png := writeRenameFixture(t, directory, "photo.png", "png")
+	service := NewRenameServiceAt(filepath.Join(directory, "history.json"))
+
+	plan, err := service.Preview(
+		[]string{jpg, png},
+		`{"rules":[{"type":"newName","enabled":true,`+
+			`"value":"jpg","applyTo":"extension"}]}`,
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if plan.Items[1].Status != "error" {
+		t.Fatalf("second status = %q, want error", plan.Items[1].Status)
+	}
+}
+
 func TestRenameServiceRejectsCollisionBeforeApply(t *testing.T) {
 	directory := t.TempDir()
 	source := writeRenameFixture(t, directory, "draft.txt", "draft")

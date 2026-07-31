@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -56,6 +57,11 @@ type historyDocument struct {
 	Batches []models.RenameBatch `json:"batches"`
 }
 
+type preparedRenameRule struct {
+	rule    models.RenameRule
+	matcher *regexp.Regexp
+}
+
 func NewRenameService() RenameService {
 	configDirectory, err := os.UserConfigDir()
 	if err != nil {
@@ -100,6 +106,10 @@ func (service *renameService) Preview(
 	if err != nil {
 		return models.RenamePlan{}, err
 	}
+	preparedRules, err := prepareRenameRules(recipe)
+	if err != nil {
+		return models.RenamePlan{}, err
+	}
 
 	plan := models.RenamePlan{
 		ID:        newID("plan"),
@@ -108,7 +118,7 @@ func (service *renameService) Preview(
 	}
 	seenSources := make(map[string]struct{}, len(paths))
 	for index, path := range paths {
-		item := inspectRenameItem(path, recipe, index)
+		item := inspectRenameItem(path, preparedRules, index)
 		key := comparablePath(item.SourcePath)
 		if _, exists := seenSources[key]; exists {
 			item.Status = models.RenameStatusError
@@ -332,6 +342,11 @@ func validateRule(rule models.RenameRule) error {
 	if !rule.Enabled {
 		return nil
 	}
+	switch rule.ApplyTo {
+	case "", "name", "extension", "both":
+	default:
+		return userError("invalid_rule", "Choose a supported rule target.")
+	}
 	switch rule.Type {
 	case "newName":
 		if rule.Value == "" {
@@ -340,6 +355,14 @@ func validateRule(rule models.RenameRule) error {
 	case "replace":
 		if rule.Value == "" {
 			return userError("invalid_rule", "Replace rules need text to find.")
+		}
+		if rule.UseRegex {
+			if _, err := regexp.Compile(regexPattern(rule)); err != nil {
+				return userError(
+					"invalid_regex",
+					"The regular expression is invalid.",
+				)
+			}
 		}
 	case "prefix", "suffix":
 		if rule.Value == "" {
@@ -365,9 +388,49 @@ func validateRule(rule models.RenameRule) error {
 	return nil
 }
 
+func prepareRenameRules(
+	recipe models.RenameRecipe,
+) ([]preparedRenameRule, error) {
+	prepared := make([]preparedRenameRule, 0, len(recipe.Rules))
+	for _, rule := range recipe.Rules {
+		item := preparedRenameRule{rule: rule}
+		if rule.Enabled && rule.Type == "replace" &&
+			(rule.UseRegex || !renameRuleCaseSensitive(rule)) {
+			pattern := regexPattern(rule)
+			if !rule.UseRegex {
+				pattern = regexp.QuoteMeta(rule.Value)
+				if !renameRuleCaseSensitive(rule) {
+					pattern = "(?i)" + pattern
+				}
+			}
+			matcher, err := regexp.Compile(pattern)
+			if err != nil {
+				return nil, userError(
+					"invalid_regex",
+					"The regular expression is invalid.",
+				)
+			}
+			item.matcher = matcher
+		}
+		prepared = append(prepared, item)
+	}
+	return prepared, nil
+}
+
+func regexPattern(rule models.RenameRule) string {
+	if renameRuleCaseSensitive(rule) {
+		return rule.Value
+	}
+	return "(?i)" + rule.Value
+}
+
+func renameRuleCaseSensitive(rule models.RenameRule) bool {
+	return rule.CaseSensitive == nil || *rule.CaseSensitive
+}
+
 func inspectRenameItem(
 	path string,
-	recipe models.RenameRecipe,
+	rules []preparedRenameRule,
 	index int,
 ) models.RenameItem {
 	absolute, err := filepath.Abs(strings.TrimSpace(path))
@@ -387,15 +450,27 @@ func inspectRenameItem(
 	}
 
 	originalName := filepath.Base(absolute)
-	stem, extension := splitFileName(originalName)
+	stem, dottedExtension := splitFileName(originalName)
+	extension := strings.TrimPrefix(dottedExtension, ".")
 	proposedStem := stem
-	for _, rule := range recipe.Rules {
-		if !rule.Enabled {
+	proposedExtension := extension
+	for _, prepared := range rules {
+		if !prepared.rule.Enabled {
 			continue
 		}
-		proposedStem = applyRule(proposedStem, rule, index)
+		switch prepared.rule.ApplyTo {
+		case "extension":
+			proposedExtension = applyRule(proposedExtension, prepared, index)
+		case "both":
+			proposedStem = applyRule(proposedStem, prepared, index)
+			if proposedExtension != "" {
+				proposedExtension = applyRule(proposedExtension, prepared, index)
+			}
+		default:
+			proposedStem = applyRule(proposedStem, prepared, index)
+		}
 	}
-	proposedName := proposedStem + extension
+	proposedName := joinFileName(proposedStem, proposedExtension)
 	item := models.RenameItem{
 		SourcePath:   absolute,
 		OriginalName: originalName,
@@ -415,12 +490,25 @@ func inspectRenameItem(
 	return item
 }
 
-func applyRule(name string, rule models.RenameRule, index int) string {
+func applyRule(name string, prepared preparedRenameRule, index int) string {
+	rule := prepared.rule
 	switch rule.Type {
 	case "newName":
 		result := strings.ReplaceAll(rule.Value, "{name}", name)
 		return strings.ReplaceAll(result, "{n}", strconv.Itoa(index+1))
 	case "replace":
+		if rule.UseRegex {
+			return prepared.matcher.ReplaceAllString(
+				name,
+				normalizeRegexReplacement(rule.Replacement),
+			)
+		}
+		if !renameRuleCaseSensitive(rule) {
+			return prepared.matcher.ReplaceAllStringFunc(
+				name,
+				func(string) string { return rule.Replacement },
+			)
+		}
 		return strings.ReplaceAll(name, rule.Value, rule.Replacement)
 	case "prefix":
 		return rule.Value + name
@@ -444,6 +532,32 @@ func applyRule(name string, rule models.RenameRule, index int) string {
 	return name
 }
 
+func normalizeRegexReplacement(value string) string {
+	var result strings.Builder
+	result.Grow(len(value))
+	for index := 0; index < len(value); index++ {
+		char := value[index]
+		if char == '\\' && index+1 < len(value) &&
+			value[index+1] >= '0' && value[index+1] <= '9' {
+			end := index + 1
+			for end < len(value) && value[end] >= '0' && value[end] <= '9' {
+				end++
+			}
+			result.WriteString("${")
+			result.WriteString(value[index+1 : end])
+			result.WriteByte('}')
+			index = end - 1
+			continue
+		}
+		if char == '$' {
+			result.WriteString("$$")
+			continue
+		}
+		result.WriteByte(char)
+	}
+	return result.String()
+}
+
 func titleCase(value string) string {
 	startWord := true
 	return strings.Map(func(char rune) rune {
@@ -465,6 +579,13 @@ func splitFileName(name string) (string, string) {
 		return name, ""
 	}
 	return strings.TrimSuffix(name, extension), extension
+}
+
+func joinFileName(stem string, extension string) string {
+	if extension == "" {
+		return stem
+	}
+	return stem + "." + strings.TrimPrefix(extension, ".")
 }
 
 func invalidFileNameMessage(name string) string {

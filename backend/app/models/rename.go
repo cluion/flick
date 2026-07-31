@@ -9,13 +9,16 @@ const (
 )
 
 type RenameRule struct {
-	Type        string `json:"type"`
-	Enabled     bool   `json:"enabled"`
-	Value       string `json:"value,omitempty"`
-	Replacement string `json:"replacement,omitempty"`
-	Mode        string `json:"mode,omitempty"`
-	Start       int    `json:"start,omitempty"`
-	Padding     int    `json:"padding,omitempty"`
+	Type          string `json:"type"`
+	Enabled       bool   `json:"enabled"`
+	Value         string `json:"value,omitempty"`
+	Replacement   string `json:"replacement,omitempty"`
+	Mode          string `json:"mode,omitempty"`
+	ApplyTo       string `json:"applyTo,omitempty"`
+	CaseSensitive *bool  `json:"caseSensitive,omitempty"`
+	UseRegex      bool   `json:"useRegex,omitempty"`
+	Start         int    `json:"start,omitempty"`
+	Padding       int    `json:"padding,omitempty"`
 }
 
 type RenameRecipe struct {

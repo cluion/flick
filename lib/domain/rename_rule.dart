@@ -10,6 +10,22 @@ enum RenameRuleType {
   trim,
 }
 
+enum RenameRuleTarget { name, extension, both }
+
+extension RenameRuleTargetLabel on RenameRuleTarget {
+  String get wireName => switch (this) {
+    RenameRuleTarget.name => 'name',
+    RenameRuleTarget.extension => 'extension',
+    RenameRuleTarget.both => 'both',
+  };
+
+  String get label => switch (this) {
+    RenameRuleTarget.name => '主檔名',
+    RenameRuleTarget.extension => '副檔名',
+    RenameRuleTarget.both => '主檔名與副檔名',
+  };
+}
+
 extension RenameRuleTypeLabel on RenameRuleType {
   String get wireName => switch (this) {
     RenameRuleType.newName => 'newName',
@@ -50,6 +66,9 @@ class RenameRule {
     this.value = '',
     this.replacement = '',
     this.mode = 'lower',
+    this.target = RenameRuleTarget.name,
+    this.caseSensitive = true,
+    this.useRegex = false,
     this.start = 1,
     this.padding = 2,
   });
@@ -78,6 +97,12 @@ class RenameRule {
       value: json['value'] as String? ?? '',
       replacement: json['replacement'] as String? ?? '',
       mode: json['mode'] as String? ?? 'lower',
+      target: RenameRuleTarget.values.firstWhere(
+        (target) => target.wireName == json['applyTo'],
+        orElse: () => RenameRuleTarget.name,
+      ),
+      caseSensitive: json['caseSensitive'] as bool? ?? true,
+      useRegex: json['useRegex'] as bool? ?? false,
       start: json['start'] as int? ?? 1,
       padding: json['padding'] as int? ?? 2,
     );
@@ -89,6 +114,9 @@ class RenameRule {
   final String value;
   final String replacement;
   final String mode;
+  final RenameRuleTarget target;
+  final bool caseSensitive;
+  final bool useRegex;
   final int start;
   final int padding;
 
@@ -107,6 +135,9 @@ class RenameRule {
     String? value,
     String? replacement,
     String? mode,
+    RenameRuleTarget? target,
+    bool? caseSensitive,
+    bool? useRegex,
     int? start,
     int? padding,
   }) {
@@ -117,6 +148,9 @@ class RenameRule {
       value: value ?? this.value,
       replacement: replacement ?? this.replacement,
       mode: mode ?? this.mode,
+      target: target ?? this.target,
+      caseSensitive: caseSensitive ?? this.caseSensitive,
+      useRegex: useRegex ?? this.useRegex,
       start: start ?? this.start,
       padding: padding ?? this.padding,
     );
@@ -132,6 +166,11 @@ class RenameRule {
     if (value.isNotEmpty) 'value': value,
     if (replacement.isNotEmpty) 'replacement': replacement,
     if (type == RenameRuleType.letterCase) 'mode': mode,
+    'applyTo': target.wireName,
+    if (type == RenameRuleType.replace) ...{
+      'caseSensitive': caseSensitive,
+      'useRegex': useRegex,
+    },
     if (type == RenameRuleType.sequence) ...{
       'start': start,
       'padding': padding,

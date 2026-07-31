@@ -128,4 +128,24 @@ void main() {
     expect(find.text('加入檔案'), findsOneWidget);
     expect(find.text('加入資料夾'), findsOneWidget);
   });
+
+  testWidgets('shows advanced replace controls', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(1280, 820);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(FlickApp(connector: () async => FakeBackend()));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('新增規則'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('取代文字'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('區分大小寫'), findsOneWidget);
+    expect(find.text('使用正規表示式'), findsOneWidget);
+    expect(find.text('套用到'), findsNWidgets(2));
+  });
 }

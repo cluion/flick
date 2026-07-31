@@ -28,4 +28,36 @@ void main() {
     expect(encodedRule['enabled'], isTrue);
     expect(encodedRule['value'], 'holiday-{n}');
   });
+
+  test('advanced replace settings survive recipe and saved-rule encoding', () {
+    final rule = RenameRule.create(RenameRuleType.replace).copyWith(
+      value: r'(.*) - (.*)',
+      replacement: r'\2 - \1',
+      target: RenameRuleTarget.both,
+      caseSensitive: false,
+      useRegex: true,
+    );
+
+    final recipe = jsonDecode(encodeRenameRecipe([rule])) as Map;
+    final encodedRule = (recipe['rules'] as List).single as Map;
+    final restored = decodeSavedRules(encodeSavedRules([rule])).single;
+
+    expect(encodedRule['applyTo'], 'both');
+    expect(encodedRule['caseSensitive'], isFalse);
+    expect(encodedRule['useRegex'], isTrue);
+    expect(restored.target, RenameRuleTarget.both);
+    expect(restored.caseSensitive, isFalse);
+    expect(restored.useRegex, isTrue);
+    expect(restored.replacement, r'\2 - \1');
+  });
+
+  test('old saved rules keep compatible defaults', () {
+    final restored = decodeSavedRules(
+      '[{"id":"legacy","type":"replace","enabled":true,"value":"A"}]',
+    ).single;
+
+    expect(restored.target, RenameRuleTarget.name);
+    expect(restored.caseSensitive, isTrue);
+    expect(restored.useRegex, isFalse);
+  });
 }
