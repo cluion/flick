@@ -1,0 +1,71 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/cluion/bridra/backend/framework"
+	"github.com/cluion/flick/backend/app"
+)
+
+func main() {
+	token := flag.String("token", "", "ephemeral token supplied by Flutter")
+	flag.Parse()
+	if *token == "" {
+		fmt.Fprintln(os.Stderr, "sidecar: --token is required")
+		os.Exit(2)
+	}
+	fileTransfers, err := framework.NewFileTransferStore(
+		framework.FileTransferOptions{ExposeLocalPath: true},
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sidecar: file transfers: %v\n", err)
+		os.Exit(2)
+	}
+	defer fileTransfers.Close()
+	server := framework.Server{
+		Router: app.NewRouterWithFileTransfers(
+			*token,
+			os.Stderr,
+			"Go sidecar",
+			fileTransfers,
+		),
+		Input:         os.Stdin,
+		Output:        os.Stdout,
+		Errors:        os.Stderr,
+		FileTransfers: fileTransfers,
+		Token:         *token,
+	}
+	signalContext, stopSignals := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+	defer stopSignals()
+	ctx, stopParent, err := framework.ParentProcessContext(signalContext)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sidecar: parent lifecycle: %v\n", err)
+		os.Exit(2)
+	}
+	defer stopParent()
+	go func() {
+		<-ctx.Done()
+		_ = os.Stdin.Close()
+	}()
+	serveError := server.Serve(ctx)
+	cause := context.Cause(ctx)
+	if cause != nil &&
+		!errors.Is(cause, context.Canceled) &&
+		!errors.Is(cause, framework.ErrParentProcessExited) {
+		serveError = errors.Join(serveError, cause)
+	}
+	if serveError != nil {
+		fmt.Fprintf(os.Stderr, "sidecar: %v\n", serveError)
+		os.Exit(1)
+	}
+}

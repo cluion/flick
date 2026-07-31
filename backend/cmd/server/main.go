@@ -1,0 +1,55 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"net/http"
+	"os"
+
+	"github.com/cluion/bridra/backend/framework"
+	"github.com/cluion/flick/backend/app"
+)
+
+func main() {
+	listen := flag.String("listen", "127.0.0.1:8080", "HTTP listen address")
+	token := flag.String("token", "", "RPC token; defaults to BRIDRA_BACKEND_TOKEN")
+	origin := flag.String("cors-origin", "*", "allowed browser origin")
+	flag.Parse()
+	if *token == "" {
+		*token = os.Getenv("BRIDRA_BACKEND_TOKEN")
+	}
+	if *token == "" {
+		fmt.Fprintln(os.Stderr, "server: token or BRIDRA_BACKEND_TOKEN is required")
+		os.Exit(2)
+	}
+	fileTransfers, err := framework.NewFileTransferStore(
+		framework.DefaultFileTransferOptions(),
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "server: file transfers: %v\n", err)
+		os.Exit(2)
+	}
+	defer fileTransfers.Close()
+	mux := http.NewServeMux()
+	mux.Handle("/rpc", &framework.HTTPHandler{
+		Router: app.NewRouterWithFileTransfers(
+			*token,
+			os.Stderr,
+			"Go HTTP server",
+			fileTransfers,
+		),
+		AllowedOrigin: *origin,
+		Errors:        os.Stderr,
+	})
+	mux.Handle("/rpc/files/", &framework.FileTransferHTTPHandler{
+		Store:         fileTransfers,
+		AllowedOrigin: *origin,
+		Token:         *token,
+		Errors:        os.Stderr,
+	})
+	fmt.Fprintf(os.Stderr, "server: listening on http://%s/rpc\n", *listen)
+	if err := http.ListenAndServe(*listen, mux); err != nil {
+		fmt.Fprintf(os.Stderr, "server: %v\n", err)
+		os.Exit(1)
+	}
+}

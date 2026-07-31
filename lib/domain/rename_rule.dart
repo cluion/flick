@@ -1,0 +1,163 @@
+import 'dart:convert';
+
+enum RenameRuleType {
+  newName,
+  replace,
+  prefix,
+  suffix,
+  letterCase,
+  sequence,
+  trim,
+}
+
+extension RenameRuleTypeLabel on RenameRuleType {
+  String get wireName => switch (this) {
+    RenameRuleType.newName => 'newName',
+    RenameRuleType.replace => 'replace',
+    RenameRuleType.prefix => 'prefix',
+    RenameRuleType.suffix => 'suffix',
+    RenameRuleType.letterCase => 'case',
+    RenameRuleType.sequence => 'sequence',
+    RenameRuleType.trim => 'trim',
+  };
+
+  String get label => switch (this) {
+    RenameRuleType.newName => '設定新檔名',
+    RenameRuleType.replace => '取代文字',
+    RenameRuleType.prefix => '加入前綴',
+    RenameRuleType.suffix => '加入後綴',
+    RenameRuleType.letterCase => '變更大小寫',
+    RenameRuleType.sequence => '加入流水號',
+    RenameRuleType.trim => '清除頭尾空白',
+  };
+
+  String get description => switch (this) {
+    RenameRuleType.newName => '直接設定主檔名，可使用 {name} 與 {n}',
+    RenameRuleType.replace => '搜尋檔名中的文字並全部取代',
+    RenameRuleType.prefix => '在原檔名前方加上固定文字',
+    RenameRuleType.suffix => '在副檔名前加上固定文字',
+    RenameRuleType.letterCase => '統一檔名的英文大小寫',
+    RenameRuleType.sequence => '依照目前排序加入連續編號',
+    RenameRuleType.trim => '移除檔名頭尾的空白',
+  };
+}
+
+class RenameRule {
+  const RenameRule({
+    required this.id,
+    required this.type,
+    this.enabled = true,
+    this.value = '',
+    this.replacement = '',
+    this.mode = 'lower',
+    this.start = 1,
+    this.padding = 2,
+  });
+
+  factory RenameRule.create(RenameRuleType type) => RenameRule(
+    id: DateTime.now().microsecondsSinceEpoch.toString(),
+    type: type,
+    value: switch (type) {
+      RenameRuleType.prefix => 'Project-',
+      RenameRuleType.suffix => '-final',
+      _ => '',
+    },
+  );
+
+  factory RenameRule.fromJson(Map<String, Object?> json) {
+    final wireType = json['type'] as String? ?? '';
+    return RenameRule(
+      id:
+          json['id'] as String? ??
+          DateTime.now().microsecondsSinceEpoch.toString(),
+      type: RenameRuleType.values.firstWhere(
+        (type) => type.wireName == wireType,
+        orElse: () => RenameRuleType.newName,
+      ),
+      enabled: json['enabled'] as bool? ?? true,
+      value: json['value'] as String? ?? '',
+      replacement: json['replacement'] as String? ?? '',
+      mode: json['mode'] as String? ?? 'lower',
+      start: json['start'] as int? ?? 1,
+      padding: json['padding'] as int? ?? 2,
+    );
+  }
+
+  final String id;
+  final RenameRuleType type;
+  final bool enabled;
+  final String value;
+  final String replacement;
+  final String mode;
+  final int start;
+  final int padding;
+
+  bool get isComplete => switch (type) {
+    RenameRuleType.newName ||
+    RenameRuleType.replace ||
+    RenameRuleType.prefix ||
+    RenameRuleType.suffix => value.isNotEmpty,
+    RenameRuleType.letterCase ||
+    RenameRuleType.sequence ||
+    RenameRuleType.trim => true,
+  };
+
+  RenameRule copyWith({
+    bool? enabled,
+    String? value,
+    String? replacement,
+    String? mode,
+    int? start,
+    int? padding,
+  }) {
+    return RenameRule(
+      id: id,
+      type: type,
+      enabled: enabled ?? this.enabled,
+      value: value ?? this.value,
+      replacement: replacement ?? this.replacement,
+      mode: mode ?? this.mode,
+      start: start ?? this.start,
+      padding: padding ?? this.padding,
+    );
+  }
+
+  Map<String, Object?> toJson({
+    bool includeId = false,
+    bool disableIncomplete = false,
+  }) => {
+    if (includeId) 'id': id,
+    'type': type.wireName,
+    'enabled': enabled && (!disableIncomplete || isComplete),
+    if (value.isNotEmpty) 'value': value,
+    if (replacement.isNotEmpty) 'replacement': replacement,
+    if (type == RenameRuleType.letterCase) 'mode': mode,
+    if (type == RenameRuleType.sequence) ...{
+      'start': start,
+      'padding': padding,
+    },
+  };
+}
+
+String encodeRenameRecipe(List<RenameRule> rules) {
+  return jsonEncode({
+    'rules': rules
+        .map((rule) => rule.toJson(disableIncomplete: true))
+        .toList(growable: false),
+  });
+}
+
+String encodeSavedRules(List<RenameRule> rules) {
+  return jsonEncode(
+    rules.map((rule) => rule.toJson(includeId: true)).toList(growable: false),
+  );
+}
+
+List<RenameRule> decodeSavedRules(String encoded) {
+  final decoded = jsonDecode(encoded);
+  if (decoded is! List) return const [];
+  return decoded
+      .whereType<Map>()
+      .map((json) => RenameRule.fromJson(Map<String, Object?>.from(json)))
+      .toList(growable: false);
+}

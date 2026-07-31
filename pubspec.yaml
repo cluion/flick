@@ -1,0 +1,23 @@
+name: flick
+description: "A safe, fast batch file renamer powered by Bridra."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+  bridra_flutter: "^0.8.0"
+  desktop_drop: ^0.7.1
+  file_selector: ^1.1.0
+  shared_preferences: ^2.5.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

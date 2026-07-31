@@ -1,0 +1,29 @@
+.dart_tool/
+.fvm/
+.flutter-plugins-dependencies
+.idea/
+.vscode/
+build/
+coverage/
+*.iml
+*.log
+.DS_Store
+
+# Local agent and project notes
+.agents/
+.codex/
+.internal/
+
+# Local environment and signing secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.mobileprovision
+*.keystore
+*.jks
+
+backend/bridra_backend
+backend/bridra_server

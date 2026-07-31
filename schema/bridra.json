@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "methods": [
+    {
+      "name": "system.health",
+      "clientName": "health",
+      "result": {
+        "goType": "HealthResponse",
+        "dartType": "HealthInfo",
+        "fields": [
+          {"name": "status", "type": "string"},
+          {"name": "frameworkVersion", "type": "string"},
+          {"name": "protocolVersion", "type": "integer"},
+          {"name": "runtime", "type": "string"},
+          {"name": "architecture", "type": "string"}
+        ]
+      }
+    },
+    {
+      "name": "rename.preview",
+      "clientName": "previewRename",
+      "params": {
+        "goType": "PreviewRenameRequest",
+        "dartType": "PreviewRenameRequest",
+        "fields": [
+          {"name": "paths", "type": "string", "array": true},
+          {"name": "recipe", "type": "string", "minLength": 2}
+        ]
+      },
+      "result": {
+        "goType": "RenamePlanResponse",
+        "dartType": "RenamePlan",
+        "fields": [
+          {"name": "planId", "type": "string"},
+          {"name": "sourcePaths", "type": "string", "array": true},
+          {"name": "originalNames", "type": "string", "array": true},
+          {"name": "proposedNames", "type": "string", "array": true},
+          {"name": "targetPaths", "type": "string", "array": true},
+          {"name": "statuses", "type": "string", "array": true},
+          {"name": "messages", "type": "string", "array": true},
+          {"name": "renameableCount", "type": "integer"},
+          {"name": "unchangedCount", "type": "integer"},
+          {"name": "errorCount", "type": "integer"}
+        ]
+      }
+    },
+    {
+      "name": "rename.apply",
+      "clientName": "applyRename",
+      "params": {
+        "goType": "ApplyRenameRequest",
+        "dartType": "ApplyRenameRequest",
+        "fields": [
+          {"name": "planId", "type": "string", "minLength": 1}
+        ]
+      },
+      "result": {
+        "goType": "ApplyRenameResponse",
+        "dartType": "ApplyRenameResult",
+        "fields": [
+          {"name": "batchId", "type": "string"},
+          {"name": "changedCount", "type": "integer"},
+          {"name": "message", "type": "string"}
+        ]
+      }
+    },
+    {
+      "name": "rename.undo",
+      "clientName": "undoRename",
+      "params": {
+        "goType": "UndoRenameRequest",
+        "dartType": "UndoRenameRequest",
+        "fields": [
+          {"name": "batchId", "type": "string", "minLength": 1}
+        ]
+      },
+      "result": {
+        "goType": "UndoRenameResponse",
+        "dartType": "UndoRenameResult",
+        "fields": [
+          {"name": "batchId", "type": "string"},
+          {"name": "changedCount", "type": "integer"},
+          {"name": "message", "type": "string"}
+        ]
+      }
+    },
+    {
+      "name": "rename.history",
+      "clientName": "renameHistory",
+      "result": {
+        "goType": "RenameHistoryResponse",
+        "dartType": "RenameHistory",
+        "fields": [
+          {"name": "batchIds", "type": "string", "array": true},
+          {"name": "timestamps", "type": "string", "format": "date-time", "array": true},
+          {"name": "changedCounts", "type": "integer", "array": true},
+          {"name": "undoable", "type": "boolean", "array": true}
+        ]
+      }
+    }
+  ]
+}

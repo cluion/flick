@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 2,
+  "projectName": "flick",
+  "goModule": "github.com/cluion/flick/backend",
+  "frameworkModule": "github.com/cluion/bridra/backend",
+  "frameworkVersion": "0.8.0",
+  "templateVersion": 2,
+  "protocolVersion": 1
+}
