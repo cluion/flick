@@ -113,7 +113,11 @@ jobs:
             -Path "build\windows\x64\runner\Release\*" `
             -DestinationPath "dist\flick-windows-x64.zip"
           $hash = (Get-FileHash "dist\flick-windows-x64.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  flick-windows-x64.zip" | Set-Content "dist\flick-windows-x64-SHA256SUMS.txt"
+          [System.IO.File]::WriteAllText(
+            "dist\flick-windows-x64-SHA256SUMS.txt",
+            "$hash  flick-windows-x64.zip`n",
+            [System.Text.UTF8Encoding]::new($false)
+          )
 
       - name: Upload release bundle
         uses: actions/upload-artifact@v7
