@@ -142,6 +142,89 @@ func TestRenameServiceSupportsAdvancedReplaceOptions(t *testing.T) {
 	}
 }
 
+func TestRenameServiceAppliesAndNegatesRuleConditions(t *testing.T) {
+	directory := t.TempDir()
+	draft := writeRenameFixture(t, directory, "draft.txt", "draft")
+	done := writeRenameFixture(t, directory, "draft-done.txt", "done")
+	service := NewRenameServiceAt(filepath.Join(directory, "history.json"))
+
+	plan, err := service.Preview(
+		[]string{draft, done},
+		`{"rules":[{"type":"replace","enabled":true,`+
+			`"value":"draft","replacement":"final",`+
+			`"condition":{"enabled":true,"field":"name",`+
+			`"operator":"contains","value":"-DONE","negate":true}}]}`,
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if got := plan.Items[0].ProposedName; got != "final.txt" {
+		t.Fatalf("first proposed name = %q, want final.txt", got)
+	}
+	if got := plan.Items[1].ProposedName; got != "draft-done.txt" {
+		t.Fatalf("second proposed name = %q, want draft-done.txt", got)
+	}
+}
+
+func TestRenameServiceEmptyConditionMatchesEveryItem(t *testing.T) {
+	directory := t.TempDir()
+	source := writeRenameFixture(t, directory, "photo.txt", "photo")
+	service := NewRenameServiceAt(filepath.Join(directory, "history.json"))
+
+	plan, err := service.Preview(
+		[]string{source},
+		`{"rules":[{"type":"prefix","enabled":true,"value":"ready-",`+
+			`"condition":{"enabled":true,"field":"name",`+
+			`"operator":"equals"}}]}`,
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if got := plan.Items[0].ProposedName; got != "ready-photo.txt" {
+		t.Fatalf("proposed name = %q, want ready-photo.txt", got)
+	}
+}
+
+func TestRenameServiceConditionSeesEarlierRuleResults(t *testing.T) {
+	directory := t.TempDir()
+	source := writeRenameFixture(t, directory, "Photo.JPG", "photo")
+	service := NewRenameServiceAt(filepath.Join(directory, "history.json"))
+
+	plan, err := service.Preview(
+		[]string{source},
+		`{"rules":[`+
+			`{"type":"case","enabled":true,"mode":"lower","applyTo":"both"},`+
+			`{"type":"newName","enabled":true,"value":"jpeg",`+
+			`"applyTo":"extension","condition":{"enabled":true,`+
+			`"field":"newExtension","operator":"equals","value":"JPG"}}]}`,
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if got := plan.Items[0].ProposedName; got != "photo.jpeg" {
+		t.Fatalf("proposed name = %q, want photo.jpeg", got)
+	}
+}
+
+func TestRenameServiceSupportsCaseInsensitiveRegexConditions(t *testing.T) {
+	directory := t.TempDir()
+	source := writeRenameFixture(t, directory, "IMG_001.txt", "photo")
+	service := NewRenameServiceAt(filepath.Join(directory, "history.json"))
+
+	plan, err := service.Preview(
+		[]string{source},
+		`{"rules":[{"type":"prefix","enabled":true,"value":"holiday-",`+
+			`"condition":{"enabled":true,"field":"name",`+
+			`"operator":"regex","value":"^img_\\d+$"}}]}`,
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if got := plan.Items[0].ProposedName; got != "holiday-IMG_001.txt" {
+		t.Fatalf("proposed name = %q, want holiday-IMG_001.txt", got)
+	}
+}
+
 func TestRenameServiceRejectsInvalidRegularExpression(t *testing.T) {
 	directory := t.TempDir()
 	source := writeRenameFixture(t, directory, "draft.txt", "fixture")
@@ -157,6 +240,26 @@ func TestRenameServiceRejectsInvalidRegularExpression(t *testing.T) {
 	}
 	var userError *RenameUserError
 	if !errors.As(err, &userError) || userError.Code != "invalid_regex" {
+		t.Fatalf("preview error = %v", err)
+	}
+}
+
+func TestRenameServiceRejectsInvalidConditionRegularExpression(t *testing.T) {
+	directory := t.TempDir()
+	source := writeRenameFixture(t, directory, "draft.txt", "fixture")
+	service := NewRenameServiceAt(filepath.Join(directory, "history.json"))
+
+	_, err := service.Preview(
+		[]string{source},
+		`{"rules":[{"type":"prefix","enabled":true,"value":"final-",`+
+			`"condition":{"enabled":true,"field":"name",`+
+			`"operator":"regex","value":"(["}}]}`,
+	)
+	if err == nil {
+		t.Fatal("preview succeeded with an invalid condition regular expression")
+	}
+	var userError *RenameUserError
+	if !errors.As(err, &userError) || userError.Code != "invalid_condition_regex" {
 		t.Fatalf("preview error = %v", err)
 	}
 }

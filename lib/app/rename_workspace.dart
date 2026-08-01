@@ -1064,6 +1064,132 @@ class _RuleFields extends StatelessWidget {
               style: TextStyle(color: subtle, fontSize: 11),
             ),
           ),
+        const SizedBox(height: 8),
+        Container(
+          decoration: BoxDecoration(
+            color: background.withValues(alpha: 0.42),
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(color: border),
+          ),
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: _RuleOption(
+                  label: '只在符合條件時套用',
+                  value: rule.condition.enabled,
+                  enabled: enabled,
+                  onChanged: (value) => onChanged(
+                    rule.copyWith(
+                      condition: rule.condition.copyWith(enabled: value),
+                    ),
+                  ),
+                ),
+              ),
+              if (rule.condition.enabled)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 2, 10, 10),
+                  child: _RuleConditionFields(
+                    rule: rule,
+                    enabled: enabled,
+                    onChanged: onChanged,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _RuleConditionFields extends StatelessWidget {
+  const _RuleConditionFields({
+    required this.rule,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final RenameRule rule;
+  final bool enabled;
+  final ValueChanged<RenameRule> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final condition = rule.condition;
+    void update(RenameRuleCondition value) {
+      onChanged(rule.copyWith(condition: value));
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        DropdownButtonFormField<RenameConditionField>(
+          key: ValueKey('${rule.id}-condition-field'),
+          initialValue: condition.field,
+          decoration: const InputDecoration(labelText: '判斷欄位'),
+          items: RenameConditionField.values
+              .map(
+                (field) =>
+                    DropdownMenuItem(value: field, child: Text(field.label)),
+              )
+              .toList(growable: false),
+          onChanged: enabled
+              ? (field) {
+                  if (field != null) update(condition.copyWith(field: field));
+                }
+              : null,
+        ),
+        const SizedBox(height: 8),
+        DropdownButtonFormField<RenameConditionOperator>(
+          key: ValueKey('${rule.id}-condition-operator'),
+          initialValue: condition.operator,
+          decoration: const InputDecoration(labelText: '比對方式'),
+          items: RenameConditionOperator.values
+              .map(
+                (operator) => DropdownMenuItem(
+                  value: operator,
+                  child: Text(operator.label),
+                ),
+              )
+              .toList(growable: false),
+          onChanged: enabled
+              ? (operator) {
+                  if (operator != null) {
+                    update(condition.copyWith(operator: operator));
+                  }
+                }
+              : null,
+        ),
+        const SizedBox(height: 8),
+        TextFormField(
+          key: ValueKey('${rule.id}-condition-value'),
+          initialValue: condition.value,
+          enabled: enabled,
+          decoration: InputDecoration(
+            labelText: '條件內容',
+            hintText: condition.operator == RenameConditionOperator.regex
+                ? r'例如 ^IMG_\d+$'
+                : '例如 -done',
+          ),
+          onChanged: (value) => update(condition.copyWith(value: value)),
+        ),
+        const SizedBox(height: 3),
+        _RuleOption(
+          label: '反向條件（排除符合項目）',
+          value: condition.negate,
+          enabled: enabled,
+          onChanged: (value) => update(condition.copyWith(negate: value)),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(left: 4, top: 1),
+          child: Text(
+            condition.operator == RenameConditionOperator.regex
+                ? '使用 RE2 語法；條件比對不區分大小寫'
+                : '條件比對不區分大小寫；留白會符合全部項目',
+            style: const TextStyle(color: subtle, fontSize: 11),
+          ),
+        ),
       ],
     );
   }
@@ -1749,6 +1875,8 @@ String _friendlyError(Object error) {
       'directory_required' => '無法讀取選取的資料夾',
       'invalid_rule' => '規則設定不完整，請檢查左側欄位',
       'invalid_regex' => '正規表示式格式不正確，請檢查「尋找」欄位',
+      'invalid_condition' => '條件設定不正確，請檢查規則中的條件欄位',
+      'invalid_condition_regex' => '條件的正規表示式格式不正確',
       _ => error.message,
     };
   }

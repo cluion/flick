@@ -150,4 +150,26 @@ void main() {
     expect(find.text('使用正規表示式'), findsOneWidget);
     expect(find.text('套用到'), findsNWidgets(2));
   });
+
+  testWidgets('expands per-rule condition controls', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(1280, 820);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(FlickApp(connector: () async => FakeBackend()));
+    await tester.pumpAndSettle();
+
+    expect(find.text('只在符合條件時套用'), findsOneWidget);
+    expect(find.text('判斷欄位'), findsNothing);
+
+    await tester.tap(find.text('只在符合條件時套用'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('判斷欄位'), findsOneWidget);
+    expect(find.text('比對方式'), findsOneWidget);
+    expect(find.text('條件內容'), findsOneWidget);
+    expect(find.text('反向條件（排除符合項目）'), findsOneWidget);
+  });
 }

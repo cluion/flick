@@ -9,16 +9,25 @@ const (
 )
 
 type RenameRule struct {
-	Type          string `json:"type"`
-	Enabled       bool   `json:"enabled"`
-	Value         string `json:"value,omitempty"`
-	Replacement   string `json:"replacement,omitempty"`
-	Mode          string `json:"mode,omitempty"`
-	ApplyTo       string `json:"applyTo,omitempty"`
-	CaseSensitive *bool  `json:"caseSensitive,omitempty"`
-	UseRegex      bool   `json:"useRegex,omitempty"`
-	Start         int    `json:"start,omitempty"`
-	Padding       int    `json:"padding,omitempty"`
+	Type          string               `json:"type"`
+	Enabled       bool                 `json:"enabled"`
+	Value         string               `json:"value,omitempty"`
+	Replacement   string               `json:"replacement,omitempty"`
+	Mode          string               `json:"mode,omitempty"`
+	ApplyTo       string               `json:"applyTo,omitempty"`
+	CaseSensitive *bool                `json:"caseSensitive,omitempty"`
+	UseRegex      bool                 `json:"useRegex,omitempty"`
+	Start         int                  `json:"start,omitempty"`
+	Padding       int                  `json:"padding,omitempty"`
+	Condition     *RenameRuleCondition `json:"condition,omitempty"`
+}
+
+type RenameRuleCondition struct {
+	Enabled  bool   `json:"enabled"`
+	Field    string `json:"field,omitempty"`
+	Operator string `json:"operator,omitempty"`
+	Value    string `json:"value,omitempty"`
+	Negate   bool   `json:"negate,omitempty"`
 }
 
 type RenameRecipe struct {

@@ -59,5 +59,43 @@ void main() {
     expect(restored.target, RenameRuleTarget.name);
     expect(restored.caseSensitive, isTrue);
     expect(restored.useRegex, isFalse);
+    expect(restored.condition.enabled, isFalse);
+  });
+
+  test('rule conditions survive recipe and saved-rule encoding', () {
+    final rule = RenameRule.create(RenameRuleType.prefix).copyWith(
+      condition: const RenameRuleCondition(
+        enabled: true,
+        field: RenameConditionField.newName,
+        operator: RenameConditionOperator.regex,
+        value: r'^IMG_\d+$',
+        negate: true,
+      ),
+    );
+
+    final recipe = jsonDecode(encodeRenameRecipe([rule])) as Map;
+    final encodedCondition =
+        ((recipe['rules'] as List).single as Map)['condition'] as Map;
+    final restored = decodeSavedRules(encodeSavedRules([rule])).single;
+
+    expect(encodedCondition['field'], 'newName');
+    expect(encodedCondition['operator'], 'regex');
+    expect(encodedCondition['negate'], isTrue);
+    expect(restored.condition.enabled, isTrue);
+    expect(restored.condition.field, RenameConditionField.newName);
+    expect(restored.condition.operator, RenameConditionOperator.regex);
+    expect(restored.condition.value, r'^IMG_\d+$');
+    expect(restored.condition.negate, isTrue);
+  });
+
+  test('disabled conditions stay out of preview recipes', () {
+    final rule = RenameRule.create(RenameRuleType.prefix);
+    final recipe = jsonDecode(encodeRenameRecipe([rule])) as Map;
+    final previewRule = (recipe['rules'] as List).single as Map;
+    final savedRule =
+        (jsonDecode(encodeSavedRules([rule])) as List).single as Map;
+
+    expect(previewRule.containsKey('condition'), isFalse);
+    expect(savedRule.containsKey('condition'), isTrue);
   });
 }

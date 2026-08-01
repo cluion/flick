@@ -58,8 +58,9 @@ type historyDocument struct {
 }
 
 type preparedRenameRule struct {
-	rule    models.RenameRule
-	matcher *regexp.Regexp
+	rule             models.RenameRule
+	matcher          *regexp.Regexp
+	conditionMatcher *regexp.Regexp
 }
 
 func NewRenameService() RenameService {
@@ -347,6 +348,9 @@ func validateRule(rule models.RenameRule) error {
 	default:
 		return userError("invalid_rule", "Choose a supported rule target.")
 	}
+	if err := validateRuleCondition(rule.Condition); err != nil {
+		return err
+	}
 	switch rule.Type {
 	case "newName":
 		if rule.Value == "" {
@@ -388,6 +392,30 @@ func validateRule(rule models.RenameRule) error {
 	return nil
 }
 
+func validateRuleCondition(condition *models.RenameRuleCondition) error {
+	if condition == nil || !condition.Enabled {
+		return nil
+	}
+	switch condition.Field {
+	case "name", "newName", "extension", "newExtension", "path":
+	default:
+		return userError("invalid_condition", "Choose a supported condition field.")
+	}
+	switch condition.Operator {
+	case "contains", "startsWith", "endsWith", "equals":
+	case "regex":
+		if _, err := regexp.Compile(caseInsensitivePattern(condition.Value)); err != nil {
+			return userError(
+				"invalid_condition_regex",
+				"The condition regular expression is invalid.",
+			)
+		}
+	default:
+		return userError("invalid_condition", "Choose a supported condition match.")
+	}
+	return nil
+}
+
 func prepareRenameRules(
 	recipe models.RenameRecipe,
 ) ([]preparedRenameRule, error) {
@@ -412,9 +440,24 @@ func prepareRenameRules(
 			}
 			item.matcher = matcher
 		}
+		if condition := rule.Condition; rule.Enabled && condition != nil &&
+			condition.Enabled && condition.Operator == "regex" {
+			matcher, err := regexp.Compile(caseInsensitivePattern(condition.Value))
+			if err != nil {
+				return nil, userError(
+					"invalid_condition_regex",
+					"The condition regular expression is invalid.",
+				)
+			}
+			item.conditionMatcher = matcher
+		}
 		prepared = append(prepared, item)
 	}
 	return prepared, nil
+}
+
+func caseInsensitivePattern(value string) string {
+	return "(?i)" + value
 }
 
 func regexPattern(rule models.RenameRule) string {
@@ -458,6 +501,16 @@ func inspectRenameItem(
 		if !prepared.rule.Enabled {
 			continue
 		}
+		if !ruleConditionMatches(
+			prepared,
+			stem,
+			extension,
+			proposedStem,
+			proposedExtension,
+			filepath.Dir(absolute),
+		) {
+			continue
+		}
 		switch prepared.rule.ApplyTo {
 		case "extension":
 			proposedExtension = applyRule(proposedExtension, prepared, index)
@@ -488,6 +541,69 @@ func inspectRenameItem(
 		item.Message = message
 	}
 	return item
+}
+
+func ruleConditionMatches(
+	prepared preparedRenameRule,
+	originalName string,
+	originalExtension string,
+	newName string,
+	newExtension string,
+	path string,
+) bool {
+	condition := prepared.rule.Condition
+	if condition == nil || !condition.Enabled {
+		return true
+	}
+	fieldValue := conditionFieldValue(
+		condition.Field,
+		originalName,
+		originalExtension,
+		newName,
+		newExtension,
+		path,
+	)
+	matched := condition.Value == ""
+	if !matched {
+		switch condition.Operator {
+		case "contains":
+			matched = strings.Contains(strings.ToLower(fieldValue), strings.ToLower(condition.Value))
+		case "startsWith":
+			matched = strings.HasPrefix(strings.ToLower(fieldValue), strings.ToLower(condition.Value))
+		case "endsWith":
+			matched = strings.HasSuffix(strings.ToLower(fieldValue), strings.ToLower(condition.Value))
+		case "equals":
+			matched = strings.EqualFold(fieldValue, condition.Value)
+		case "regex":
+			matched = prepared.conditionMatcher.MatchString(fieldValue)
+		}
+	}
+	if condition.Negate {
+		return !matched
+	}
+	return matched
+}
+
+func conditionFieldValue(
+	field string,
+	originalName string,
+	originalExtension string,
+	newName string,
+	newExtension string,
+	path string,
+) string {
+	switch field {
+	case "newName":
+		return newName
+	case "extension":
+		return originalExtension
+	case "newExtension":
+		return newExtension
+	case "path":
+		return path
+	default:
+		return originalName
+	}
 }
 
 func applyRule(name string, prepared preparedRenameRule, index int) string {
