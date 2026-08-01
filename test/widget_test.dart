@@ -112,11 +112,21 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    await tester.pumpWidget(FlickApp(connector: () async => FakeBackend()));
+    await tester.pumpWidget(
+      FlickApp(
+        connector: () async => FakeBackend(),
+        versionLoader: () async => 'v0.1.0 (1)',
+      ),
+    );
     await tester.pumpAndSettle();
 
     expect(find.text('Flick'), findsOneWidget);
+    expect(find.text('v0.1.0 (1)'), findsOneWidget);
     expect(find.text('本機引擎就緒'), findsOneWidget);
+    expect(
+      find.byTooltip('Go sidecar · Bridra 0.8.0 · Protocol 1'),
+      findsOneWidget,
+    );
     expect(find.text('改名規則'), findsOneWidget);
     expect(find.text('1. 設定新檔名'), findsOneWidget);
     expect(find.byIcon(Icons.drag_indicator_rounded), findsOneWidget);

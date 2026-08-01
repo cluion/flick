@@ -17,9 +17,14 @@ const _savedRulesKey = 'flick.rename-rules.v2';
 const _maxRenameItems = 10000;
 
 class RenameWorkspace extends StatefulWidget {
-  const RenameWorkspace({super.key, required this.connector});
+  const RenameWorkspace({
+    super.key,
+    required this.connector,
+    required this.versionLoader,
+  });
 
   final BackendConnector connector;
+  final AppVersionLoader versionLoader;
 
   @override
   State<RenameWorkspace> createState() => _RenameWorkspaceState();
@@ -30,6 +35,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   HealthInfo? _health;
   RenamePlan? _plan;
   RenameHistory? _history;
+  String? _appVersion;
   List<String> _paths = const [];
   List<RenameRule> _rules = [RenameRule.create(RenameRuleType.newName)];
   Timer? _previewTimer;
@@ -46,7 +52,17 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   @override
   void initState() {
     super.initState();
+    unawaited(_loadAppVersion());
     unawaited(_bootstrap());
+  }
+
+  Future<void> _loadAppVersion() async {
+    try {
+      final version = await widget.versionLoader();
+      if (mounted) setState(() => _appVersion = version);
+    } on Object {
+      // Version metadata is informative and must never block the workspace
+    }
   }
 
   Future<void> _bootstrap() async {
@@ -413,6 +429,8 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
           child: Column(
             children: [
               _WorkspaceHeader(
+                appVersion: _appVersion,
+                health: _health,
                 connected: connected,
                 connecting: _connecting,
                 canUndo: canUndo,
@@ -498,6 +516,8 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
 
 class _WorkspaceHeader extends StatelessWidget {
   const _WorkspaceHeader({
+    required this.appVersion,
+    required this.health,
     required this.connected,
     required this.connecting,
     required this.canUndo,
@@ -505,6 +525,8 @@ class _WorkspaceHeader extends StatelessWidget {
     required this.onUndo,
   });
 
+  final String? appVersion;
+  final HealthInfo? health;
   final bool connected;
   final bool connecting;
   final bool canUndo;
@@ -547,8 +569,16 @@ class _WorkspaceHeader extends StatelessWidget {
           ),
           const SizedBox(width: 10),
           const Text('批次檔名整理', style: TextStyle(color: subtle, fontSize: 13)),
+          if (appVersion case final version?) ...[
+            const SizedBox(width: 9),
+            _VersionBadge(version: version),
+          ],
           const Spacer(),
-          _ConnectionStatus(connected: connected, connecting: connecting),
+          _ConnectionStatus(
+            health: health,
+            connected: connected,
+            connecting: connecting,
+          ),
           const SizedBox(width: 12),
           OutlinedButton.icon(
             onPressed: canUndo && !busy ? onUndo : null,
@@ -561,9 +591,40 @@ class _WorkspaceHeader extends StatelessWidget {
   }
 }
 
-class _ConnectionStatus extends StatelessWidget {
-  const _ConnectionStatus({required this.connected, required this.connecting});
+class _VersionBadge extends StatelessWidget {
+  const _VersionBadge({required this.version});
 
+  final String version;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: primary.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: primary.withValues(alpha: 0.24)),
+      ),
+      child: Text(
+        version,
+        style: const TextStyle(
+          color: primaryBright,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+class _ConnectionStatus extends StatelessWidget {
+  const _ConnectionStatus({
+    required this.health,
+    required this.connected,
+    required this.connecting,
+  });
+
+  final HealthInfo? health;
   final bool connected;
   final bool connecting;
 
@@ -571,31 +632,38 @@ class _ConnectionStatus extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = connected ? mint : (connecting ? warning : danger);
     final label = connected ? '本機引擎就緒' : (connecting ? '連線中' : '引擎離線');
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withValues(alpha: 0.35)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 7,
-            height: 7,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 7),
-          Text(
-            label,
-            style: TextStyle(
-              color: color,
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
+    final details = health == null
+        ? label
+        : '${health!.runtime} · Bridra ${health!.frameworkVersion} · '
+              'Protocol ${health!.protocolVersion}';
+    return Tooltip(
+      message: details,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: color.withValues(alpha: 0.35)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 7,
+              height: 7,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
             ),
-          ),
-        ],
+            const SizedBox(width: 7),
+            Text(
+              label,
+              style: TextStyle(
+                color: color,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

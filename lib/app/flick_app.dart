@@ -1,9 +1,19 @@
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../api/backend_gateway.dart';
 import 'rename_workspace.dart';
 
 typedef BackendConnector = Future<BackendGateway> Function();
+typedef AppVersionLoader = Future<String> Function();
+
+Future<String> loadAppVersion() async {
+  final info = await PackageInfo.fromPlatform();
+  final buildNumber = info.buildNumber.trim();
+  return buildNumber.isEmpty
+      ? 'v${info.version}'
+      : 'v${info.version} ($buildNumber)';
+}
 
 const background = Color(0xFF0B0D12);
 const surface = Color(0xFF12151C);
@@ -18,9 +28,14 @@ const danger = Color(0xFFFF7184);
 const warning = Color(0xFFF0BE62);
 
 class FlickApp extends StatelessWidget {
-  const FlickApp({super.key, this.connector = RpcBackend.connect});
+  const FlickApp({
+    super.key,
+    this.connector = RpcBackend.connect,
+    this.versionLoader = loadAppVersion,
+  });
 
   final BackendConnector connector;
+  final AppVersionLoader versionLoader;
 
   @override
   Widget build(BuildContext context) {
@@ -100,7 +115,7 @@ class FlickApp extends StatelessWidget {
         dividerColor: border,
         useMaterial3: true,
       ),
-      home: RenameWorkspace(connector: connector),
+      home: RenameWorkspace(connector: connector, versionLoader: versionLoader),
     );
   }
 }
