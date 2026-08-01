@@ -11,11 +11,10 @@ BRIDRA := $(GO) run github.com/cluion/bridra/backend/cmd/bridra
 SIDECAR := $(CURDIR)/build/sidecar/bridra_backend$(EXECUTABLE_SUFFIX)
 SERVER := $(CURDIR)/build/server/bridra_server$(EXECUTABLE_SUFFIX)
 BACKEND_TOKEN ?= dev-token
-BACKEND_URL ?=
 BUILD_MODE ?= release
 
 .PHONY: doctor generate codegen-check backend-build backend-serve run test analyze verify \
-	linux-build macos-build windows-build android-build ios-build web-build
+	linux-build macos-build windows-build
 
 doctor:
 	cd backend && $(BRIDRA) doctor --root ..
@@ -63,15 +62,3 @@ macos-build:
 
 windows-build:
 	cd backend && $(BRIDRA) build windows --root .. --mode $(BUILD_MODE)
-
-android-build:
-	cd backend && $(BRIDRA) build android --root .. --mode $(BUILD_MODE) \
-		--backend-url '$(BACKEND_URL)' --token '$(BACKEND_TOKEN)'
-
-ios-build:
-	cd backend && $(BRIDRA) build ios --root .. --mode $(BUILD_MODE) \
-		--backend-url '$(BACKEND_URL)' --token '$(BACKEND_TOKEN)'
-
-web-build:
-	cd backend && $(BRIDRA) build web --root .. --mode $(BUILD_MODE) \
-		--backend-url '$(BACKEND_URL)' --token '$(BACKEND_TOKEN)'
