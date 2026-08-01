@@ -1,0 +1,147 @@
+name: Desktop
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*.*.*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux
+            runner: ubuntu-24.04
+          - target: macos
+            runner: macos-15
+          - target: windows
+            runner: windows-2022
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Install Linux desktop dependencies
+        if: matrix.target == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-12-dev
+
+      - name: Install FVM on Linux and macOS
+        if: matrix.target != 'windows'
+        shell: bash
+        run: |
+          curl -fsSL https://fvm.app/install.sh -o /tmp/fvm-install.sh
+          bash /tmp/fvm-install.sh 4.1.2
+          echo "$HOME/fvm/bin" >> "$GITHUB_PATH"
+
+      - name: Install FVM on Windows
+        if: matrix.target == 'windows'
+        run: choco install fvm --version=4.1.2 --yes
+
+      - name: Install project Flutter SDK
+        run: fvm install
+
+      - name: Resolve Flutter dependencies
+        run: fvm flutter pub get
+
+      - name: Check generated contract
+        working-directory: backend
+        run: go run github.com/cluion/bridra/backend/cmd/bridra generate --schema ../schema/bridra.json --root .. --framework-import github.com/cluion/bridra/backend/framework --dart-runtime-import package:bridra_flutter/bridra_flutter.dart --check
+
+      - name: Test Go backend
+        working-directory: backend
+        run: go test ./...
+
+      - name: Test Flutter application
+        run: fvm flutter test
+
+      - name: Analyze Flutter application
+        run: fvm flutter analyze
+
+      - name: Build release bundle
+        working-directory: backend
+        run: go run github.com/cluion/bridra/backend/cmd/bridra build ${{ matrix.target }} --root .. --mode release
+
+      - name: Package Linux bundle
+        if: matrix.target == 'linux'
+        shell: bash
+        run: |
+          mkdir -p dist
+          tar -C build/linux/x64/release -czf dist/flick-linux-x64.tar.gz bundle
+          cd dist
+          sha256sum flick-linux-x64.tar.gz > flick-linux-x64-SHA256SUMS.txt
+
+      - name: Package macOS bundle
+        if: matrix.target == 'macos'
+        shell: bash
+        run: |
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent \
+            build/macos/Build/Products/Release/flick.app \
+            dist/flick-macos.zip
+          cd dist
+          shasum -a 256 flick-macos.zip > flick-macos-SHA256SUMS.txt
+
+      - name: Package Windows bundle
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive `
+            -Path "build\windows\x64\runner\Release\*" `
+            -DestinationPath "dist\flick-windows-x64.zip"
+          $hash = (Get-FileHash "dist\flick-windows-x64.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  flick-windows-x64.zip" | Set-Content "dist\flick-windows-x64-SHA256SUMS.txt"
+
+      - name: Upload release bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: flick-${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/*
+            build/bridra/${{ matrix.target }}-release.json
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download desktop bundles
+        uses: actions/download-artifact@v8
+        with:
+          pattern: flick-*
+          path: release
+          merge-multiple: true
+
+      - name: Publish tagged release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release/* --verify-tag --generate-notes --title "Flick $GITHUB_REF_NAME"
