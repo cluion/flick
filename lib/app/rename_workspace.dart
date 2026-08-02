@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/backend_gateway.dart';
 import '../domain/directory_import_options.dart';
+import '../domain/rename_list_io.dart';
 import '../domain/rename_rule.dart';
 import 'flick_app.dart';
 
@@ -127,6 +128,70 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     try {
       final files = await openFiles();
       _addPaths(files.map((file) => file.path));
+    } on Object catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  Future<void> _loadListRule(int index) async {
+    if (index < 0 || index >= _rules.length) return;
+    final ruleID = _rules[index].id;
+    try {
+      final file = await openFile(
+        acceptedTypeGroups: const [
+          XTypeGroup(label: '名稱清單', extensions: ['txt', 'csv']),
+        ],
+        confirmButtonText: '載入名稱',
+      );
+      if (file == null || !mounted) return;
+      final isCsv = file.name.toLowerCase().endsWith('.csv');
+      final values = decodeRenameListFile(
+        content: await file.readAsString(),
+        csv: isCsv,
+      );
+      if (values.isEmpty) throw const FormatException('清單檔案沒有可用名稱');
+      final currentIndex = _rules.indexWhere((rule) => rule.id == ruleID);
+      if (currentIndex < 0 || !mounted) return;
+      _updateRule(
+        currentIndex,
+        _rules[currentIndex].copyWith(
+          values: values,
+          target: isCsv ? RenameRuleTarget.both : null,
+        ),
+      );
+      setState(() {
+        _notice =
+            '已從 ${file.name} 載入 ${values.length} 個名稱'
+            '${isCsv ? '，套用到主檔名與副檔名' : ''}';
+        _error = null;
+      });
+    } on Object catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  Future<void> _exportRenameMapping() async {
+    final plan = _plan;
+    if (plan == null || !listEquals(plan.sourcePaths, _paths)) return;
+    try {
+      final location = await getSaveLocation(
+        acceptedTypeGroups: const [
+          XTypeGroup(label: 'CSV 對照表', extensions: ['csv']),
+        ],
+        suggestedName: 'flick-rename-mapping.csv',
+        confirmButtonText: '匯出對照表',
+      );
+      if (location == null || !mounted) return;
+      final content = encodeRenameMappingCsv(
+        originalNames: plan.originalNames,
+        proposedNames: plan.proposedNames,
+      );
+      await File(location.path).writeAsString(content, flush: true);
+      if (!mounted) return;
+      setState(() {
+        _notice = '已匯出 ${plan.originalNames.length} 筆名稱對照';
+        _error = null;
+      });
     } on Object catch (error) {
       if (mounted) setState(() => _error = error);
     }
@@ -740,8 +805,13 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                                 .map(_fileNameFromPath)
                                 .toList(growable: false),
                       enabled: connected && !_applying && !_scanning,
+                      canExportMapping:
+                          _plan != null &&
+                          listEquals(_plan!.sourcePaths, _paths),
                       onAdd: _addRule,
                       onUpdate: _updateRule,
+                      onLoadList: _loadListRule,
+                      onExportMapping: _exportRenameMapping,
                       onRemove: _removeRule,
                       onReorder: _reorderRule,
                     );
@@ -1094,8 +1164,11 @@ class _RulesPanel extends StatelessWidget {
     required this.rules,
     required this.currentNames,
     required this.enabled,
+    required this.canExportMapping,
     required this.onAdd,
     required this.onUpdate,
+    required this.onLoadList,
+    required this.onExportMapping,
     required this.onRemove,
     required this.onReorder,
   });
@@ -1103,8 +1176,11 @@ class _RulesPanel extends StatelessWidget {
   final List<RenameRule> rules;
   final List<String> currentNames;
   final bool enabled;
+  final bool canExportMapping;
   final ValueChanged<RenameRuleType> onAdd;
   final void Function(int, RenameRule) onUpdate;
+  final ValueChanged<int> onLoadList;
+  final VoidCallback onExportMapping;
   final ValueChanged<int> onRemove;
   final void Function(int, int) onReorder;
 
@@ -1191,7 +1267,10 @@ class _RulesPanel extends StatelessWidget {
                           rule: rule,
                           currentNames: currentNames,
                           enabled: enabled,
+                          canExportMapping: canExportMapping,
                           onChanged: (value) => onUpdate(index, value),
+                          onLoadList: () => onLoadList(index),
+                          onExportMapping: onExportMapping,
                           onRemove: () => onRemove(index),
                         ),
                       );
@@ -1263,7 +1342,10 @@ class _RuleCard extends StatelessWidget {
     required this.rule,
     required this.currentNames,
     required this.enabled,
+    required this.canExportMapping,
     required this.onChanged,
+    required this.onLoadList,
+    required this.onExportMapping,
     required this.onRemove,
   });
 
@@ -1271,7 +1353,10 @@ class _RuleCard extends StatelessWidget {
   final RenameRule rule;
   final List<String> currentNames;
   final bool enabled;
+  final bool canExportMapping;
   final ValueChanged<RenameRule> onChanged;
+  final VoidCallback onLoadList;
+  final VoidCallback onExportMapping;
   final VoidCallback onRemove;
 
   @override
@@ -1333,7 +1418,10 @@ class _RuleCard extends StatelessWidget {
                 rule: rule,
                 currentNames: currentNames,
                 enabled: enabled,
+                canExportMapping: canExportMapping,
                 onChanged: onChanged,
+                onLoadList: onLoadList,
+                onExportMapping: onExportMapping,
               ),
             ),
         ],
@@ -1347,13 +1435,19 @@ class _RuleFields extends StatelessWidget {
     required this.rule,
     required this.currentNames,
     required this.enabled,
+    required this.canExportMapping,
     required this.onChanged,
+    required this.onLoadList,
+    required this.onExportMapping,
   });
 
   final RenameRule rule;
   final List<String> currentNames;
   final bool enabled;
+  final bool canExportMapping;
   final ValueChanged<RenameRule> onChanged;
+  final VoidCallback onLoadList;
+  final VoidCallback onExportMapping;
 
   @override
   Widget build(BuildContext context) {
@@ -1373,7 +1467,10 @@ class _RuleFields extends StatelessWidget {
         rule: rule,
         currentNames: currentNames,
         enabled: enabled,
+        canExportMapping: canExportMapping,
         onChanged: onChanged,
+        onLoadList: onLoadList,
+        onExportMapping: onExportMapping,
       ),
       RenameRuleType.replace => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1567,13 +1664,19 @@ class _ListRuleFields extends StatefulWidget {
     required this.rule,
     required this.currentNames,
     required this.enabled,
+    required this.canExportMapping,
     required this.onChanged,
+    required this.onLoadList,
+    required this.onExportMapping,
   });
 
   final RenameRule rule;
   final List<String> currentNames;
   final bool enabled;
+  final bool canExportMapping;
   final ValueChanged<RenameRule> onChanged;
+  final VoidCallback onLoadList;
+  final VoidCallback onExportMapping;
 
   @override
   State<_ListRuleFields> createState() => _ListRuleFieldsState();
@@ -1629,7 +1732,9 @@ class _ListRuleFieldsState extends State<_ListRuleFields> {
           ),
         ),
         const SizedBox(height: 8),
-        Row(
+        Wrap(
+          spacing: 7,
+          runSpacing: 7,
           children: [
             OutlinedButton.icon(
               onPressed: widget.enabled && widget.currentNames.isNotEmpty
@@ -1638,16 +1743,31 @@ class _ListRuleFieldsState extends State<_ListRuleFields> {
               icon: const Icon(Icons.playlist_add_rounded, size: 17),
               label: const Text('填入目前名稱'),
             ),
-            const Spacer(),
-            Text(
-              itemCount == 0 ? '$nameCount 個名稱' : '$nameCount / $itemCount 個名稱',
-              style: TextStyle(
-                color: hasMismatch ? danger : subtle,
-                fontSize: 11,
-                fontWeight: hasMismatch ? FontWeight.w700 : FontWeight.w500,
-              ),
+            OutlinedButton.icon(
+              onPressed: widget.enabled ? widget.onLoadList : null,
+              icon: const Icon(Icons.file_open_outlined, size: 17),
+              label: const Text('載入 TXT/CSV'),
+            ),
+            OutlinedButton.icon(
+              onPressed: widget.enabled && widget.canExportMapping
+                  ? widget.onExportMapping
+                  : null,
+              icon: const Icon(Icons.download_outlined, size: 17),
+              label: const Text('匯出對照表'),
             ),
           ],
+        ),
+        const SizedBox(height: 6),
+        Align(
+          alignment: Alignment.centerRight,
+          child: Text(
+            itemCount == 0 ? '$nameCount 個名稱' : '$nameCount / $itemCount 個名稱',
+            style: TextStyle(
+              color: hasMismatch ? danger : subtle,
+              fontSize: 11,
+              fontWeight: hasMismatch ? FontWeight.w700 : FontWeight.w500,
+            ),
+          ),
         ),
         if (hasMismatch)
           const Padding(
@@ -2727,6 +2847,7 @@ String _friendlyError(Object error) {
       'directory_unavailable' ||
       'directory_required' => '無法讀取選取的資料夾',
       'invalid_rule' => '規則設定不完整，請檢查左側欄位',
+      'list_count_mismatch' => '名稱清單的行數必須與檔案數量完全一致',
       'invalid_regex' => '正規表示式格式不正確，請檢查「尋找」欄位',
       'invalid_condition' => '條件設定不正確，請檢查規則中的條件欄位',
       'invalid_condition_regex' => '條件的正規表示式格式不正確',

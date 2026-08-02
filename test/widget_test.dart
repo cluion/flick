@@ -6,7 +6,14 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flick/api/backend_gateway.dart';
 import 'package:flick/app/flick_app.dart';
 import 'package:flutter/material.dart'
-    show FilledButton, Icons, Offset, Size, TextFormField, ValueKey;
+    show
+        FilledButton,
+        Icons,
+        Offset,
+        OutlinedButton,
+        Size,
+        TextFormField,
+        ValueKey;
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -221,6 +228,14 @@ void main() {
     await tester.tap(find.text('名稱清單'));
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('填入目前名稱'));
+    expect(find.text('載入 TXT/CSV'), findsOneWidget);
+    expect(find.text('匯出對照表'), findsOneWidget);
+    expect(
+      tester
+          .widget<OutlinedButton>(find.widgetWithText(OutlinedButton, '匯出對照表'))
+          .onPressed,
+      isNotNull,
+    );
     await tester.tap(find.text('填入目前名稱'));
     await _pumpAsyncWork(tester);
 
