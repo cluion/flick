@@ -10,9 +10,12 @@ and undo.
 - Add files or scan folders through native pickers and drag and drop
 - Filter folder scans with wildcard patterns and optional subfolder traversal
 - Combine ordered new-name, replace, prefix, suffix, case, sequence, and trim rules
+- Assign one proposed name per item with ordered List rules and TXT/CSV imports
 - Target the name, extension, or both with case-sensitive and RE2 regular-expression replacement
 - Include or exclude files per rule using name, extension, path, or RE2 conditions
-- Preview every resulting name without touching the filesystem
+- Preview, search, and visually sort every resulting name without touching the filesystem
+- Edit individual proposed names and include or exclude selected preview items in bulk
+- Export the current original-to-proposed mapping as CSV
 - Detect duplicate names, existing targets, invalid names, and stale files
 - Apply a batch through temporary names so swaps and case-only renames are safe
 - Persist a local batch journal and undo completed batches
@@ -66,7 +69,7 @@ token-free SHA-256 manifest under `build/bridra/`.
 
 - Go module: `github.com/cluion/bridra/backend` `v0.9.0`
 - Flutter package: `bridra_flutter` `^0.9.0`
-- RPC protocol: `1`
+- RPC protocol: `3`
 
 Before changing framework versions:
 

@@ -2,6 +2,26 @@
 
 All notable changes to Flick are documented in this file.
 
+## 0.2.0 - 2026-08-02
+
+### Added
+
+- Per-file include/exclude controls, proposed-name overrides, and reset actions
+- Multi-selection, range selection, bulk include/exclude, and keyboard editing
+- Ordered List rules with newline paste and current-name population
+- TXT/CSV name-list imports and original-to-proposed CSV exports
+- Preview search and visual sorting by name, extension, size, modified time, or path
+
+### Changed
+
+- Rename previews now expose file size and modified time through RPC Protocol 3
+
+### Fixed
+
+- The preview header checkbox now correctly excludes all visible files
+- macOS debug bundles preserve executable permissions for the Go Sidecar
+- Release workflows upload platform archives and portable checksum files
+
 ## 0.1.0 - 2026-08-01
 
 ### Added
