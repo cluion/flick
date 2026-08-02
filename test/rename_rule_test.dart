@@ -29,6 +29,29 @@ void main() {
     expect(encodedRule['value'], 'holiday-{n}');
   });
 
+  test('list rules preserve ordered names in recipes and saved rules', () {
+    final rule = RenameRule.create(RenameRuleType.list).copyWith(
+      values: const ['first', 'second-{n}'],
+      target: RenameRuleTarget.both,
+    );
+
+    final recipe = jsonDecode(encodeRenameRecipe([rule])) as Map;
+    final encodedRule = (recipe['rules'] as List).single as Map;
+    final restored = decodeSavedRules(encodeSavedRules([rule])).single;
+
+    expect(encodedRule['type'], 'list');
+    expect(encodedRule['values'], ['first', 'second-{n}']);
+    expect(encodedRule['applyTo'], 'both');
+    expect(restored.type, RenameRuleType.list);
+    expect(restored.values, ['first', 'second-{n}']);
+    expect(restored.target, RenameRuleTarget.both);
+  });
+
+  test('list text accepts CRLF and ignores trailing newlines', () {
+    expect(parseRenameListText('first\r\nsecond\r\n'), ['first', 'second']);
+    expect(parseRenameListText(''), isEmpty);
+  });
+
   test('advanced replace settings survive recipe and saved-rule encoding', () {
     final rule = RenameRule.create(RenameRuleType.replace).copyWith(
       value: r'(.*) - (.*)',

@@ -2,6 +2,7 @@ import 'dart:convert';
 
 enum RenameRuleType {
   newName,
+  list,
   replace,
   prefix,
   suffix,
@@ -125,6 +126,7 @@ extension RenameRuleTargetLabel on RenameRuleTarget {
 extension RenameRuleTypeLabel on RenameRuleType {
   String get wireName => switch (this) {
     RenameRuleType.newName => 'newName',
+    RenameRuleType.list => 'list',
     RenameRuleType.replace => 'replace',
     RenameRuleType.prefix => 'prefix',
     RenameRuleType.suffix => 'suffix',
@@ -135,6 +137,7 @@ extension RenameRuleTypeLabel on RenameRuleType {
 
   String get label => switch (this) {
     RenameRuleType.newName => '設定新檔名',
+    RenameRuleType.list => '名稱清單',
     RenameRuleType.replace => '取代文字',
     RenameRuleType.prefix => '加入前綴',
     RenameRuleType.suffix => '加入後綴',
@@ -145,6 +148,7 @@ extension RenameRuleTypeLabel on RenameRuleType {
 
   String get description => switch (this) {
     RenameRuleType.newName => '直接設定主檔名，可使用 {name} 與 {n}',
+    RenameRuleType.list => '依照檔案順序逐行指定名稱',
     RenameRuleType.replace => '搜尋檔名中的文字並全部取代',
     RenameRuleType.prefix => '在原檔名前方加上固定文字',
     RenameRuleType.suffix => '在副檔名前加上固定文字',
@@ -160,6 +164,7 @@ class RenameRule {
     required this.type,
     this.enabled = true,
     this.value = '',
+    this.values = const [],
     this.replacement = '',
     this.mode = 'lower',
     this.target = RenameRuleTarget.name,
@@ -193,6 +198,8 @@ class RenameRule {
       ),
       enabled: json['enabled'] as bool? ?? true,
       value: json['value'] as String? ?? '',
+      values:
+          (json['values'] as List?)?.whereType<String>().toList() ?? const [],
       replacement: json['replacement'] as String? ?? '',
       mode: json['mode'] as String? ?? 'lower',
       target: RenameRuleTarget.values.firstWhere(
@@ -213,6 +220,7 @@ class RenameRule {
   final RenameRuleType type;
   final bool enabled;
   final String value;
+  final List<String> values;
   final String replacement;
   final String mode;
   final RenameRuleTarget target;
@@ -227,6 +235,7 @@ class RenameRule {
     RenameRuleType.replace ||
     RenameRuleType.prefix ||
     RenameRuleType.suffix => value.isNotEmpty,
+    RenameRuleType.list => values.isNotEmpty,
     RenameRuleType.letterCase ||
     RenameRuleType.sequence ||
     RenameRuleType.trim => true,
@@ -235,6 +244,7 @@ class RenameRule {
   RenameRule copyWith({
     bool? enabled,
     String? value,
+    List<String>? values,
     String? replacement,
     String? mode,
     RenameRuleTarget? target,
@@ -249,6 +259,7 @@ class RenameRule {
       type: type,
       enabled: enabled ?? this.enabled,
       value: value ?? this.value,
+      values: values ?? this.values,
       replacement: replacement ?? this.replacement,
       mode: mode ?? this.mode,
       target: target ?? this.target,
@@ -268,6 +279,7 @@ class RenameRule {
     'type': type.wireName,
     'enabled': enabled && (!disableIncomplete || isComplete),
     if (value.isNotEmpty) 'value': value,
+    if (type == RenameRuleType.list) 'values': values,
     if (replacement.isNotEmpty) 'replacement': replacement,
     if (type == RenameRuleType.letterCase) 'mode': mode,
     'applyTo': target.wireName,
@@ -281,6 +293,18 @@ class RenameRule {
     },
     if (condition.enabled || includeId) 'condition': condition.toJson(),
   };
+}
+
+List<String> parseRenameListText(String text) {
+  if (text.isEmpty) return const [];
+  final lines = text
+      .replaceAll('\r\n', '\n')
+      .replaceAll('\r', '\n')
+      .split('\n');
+  while (lines.isNotEmpty && lines.last.isEmpty) {
+    lines.removeLast();
+  }
+  return List.unmodifiable(lines);
 }
 
 String encodeRenameRecipe(List<RenameRule> rules) {

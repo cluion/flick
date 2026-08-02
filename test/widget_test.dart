@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:bridra_flutter/bridra_flutter.dart';
@@ -5,7 +6,7 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flick/api/backend_gateway.dart';
 import 'package:flick/app/flick_app.dart';
 import 'package:flutter/material.dart'
-    show FilledButton, Icons, Offset, Size, ValueKey;
+    show FilledButton, Icons, Offset, Size, TextFormField, ValueKey;
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -191,6 +192,53 @@ void main() {
     expect(find.text('區分大小寫'), findsOneWidget);
     expect(find.text('使用正規表示式'), findsOneWidget);
     expect(find.text('套用到'), findsNWidgets(2));
+  });
+
+  testWidgets('populates and validates a list rename rule', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(1280, 820);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final directory = Directory.systemTemp.createTempSync('flick-widget-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final files = ['one.txt', 'two.txt']
+        .map((name) => File('${directory.path}/$name')..writeAsStringSync(name))
+        .toList(growable: false);
+    final backend = FakeBackend();
+
+    await tester.pumpWidget(FlickApp(connector: () async => backend));
+    await tester.pumpAndSettle();
+    await _dropFiles(
+      tester,
+      files.map((file) => file.path).toList(growable: false),
+      backend,
+    );
+    await _pumpAsyncWork(tester);
+
+    await tester.tap(find.byTooltip('新增規則'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('名稱清單'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('填入目前名稱'));
+    await tester.tap(find.text('填入目前名稱'));
+    await _pumpAsyncWork(tester);
+
+    expect(find.text('2 / 2 個名稱'), findsOneWidget);
+    final recipe = jsonDecode(backend.lastPreviewRequest!.recipe) as Map;
+    final listRule = (recipe['rules'] as List).last as Map;
+    expect(listRule['type'], 'list');
+    expect(listRule['values'], ['final', 'final']);
+
+    final listField = find.byWidgetPredicate(
+      (widget) =>
+          widget is TextFormField && widget.controller?.text == 'final\nfinal',
+    );
+    expect(listField, findsOneWidget);
+    await tester.enterText(listField, 'only-one');
+    await tester.pump();
+    expect(find.text('1 / 2 個名稱'), findsOneWidget);
+    expect(find.text('名稱數量必須與檔案數量完全一致'), findsOneWidget);
   });
 
   testWidgets('expands per-rule condition controls', (tester) async {

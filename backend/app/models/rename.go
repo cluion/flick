@@ -12,6 +12,7 @@ type RenameRule struct {
 	Type          string               `json:"type"`
 	Enabled       bool                 `json:"enabled"`
 	Value         string               `json:"value,omitempty"`
+	Values        []string             `json:"values,omitempty"`
 	Replacement   string               `json:"replacement,omitempty"`
 	Mode          string               `json:"mode,omitempty"`
 	ApplyTo       string               `json:"applyTo,omitempty"`

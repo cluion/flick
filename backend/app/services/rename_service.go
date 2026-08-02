@@ -118,6 +118,9 @@ func (service *renameService) Preview(
 	if err != nil {
 		return models.RenamePlan{}, err
 	}
+	if err := validateListRuleCounts(recipe, len(paths)); err != nil {
+		return models.RenamePlan{}, err
+	}
 	preparedRules, err := prepareRenameRules(recipe)
 	if err != nil {
 		return models.RenamePlan{}, err
@@ -134,10 +137,10 @@ func (service *renameService) Preview(
 	}
 	seenSources := make(map[string]struct{}, len(paths))
 	sequenceIndex := 0
-	for _, path := range paths {
+	for listIndex, path := range paths {
 		key := comparableInputPath(path)
 		_, excluded := customizations.excluded[key]
-		item := inspectRenameItem(path, preparedRules, sequenceIndex)
+		item := inspectRenameItem(path, preparedRules, sequenceIndex, listIndex)
 		item.Included = !excluded
 		if item.Included {
 			sequenceIndex++
@@ -451,6 +454,15 @@ func validateRule(rule models.RenameRule) error {
 		if rule.Value == "" {
 			return userError("invalid_rule", "New name rules need a name.")
 		}
+	case "list":
+		if len(rule.Values) == 0 {
+			return userError("invalid_rule", "List rules need at least one name.")
+		}
+		for _, value := range rule.Values {
+			if value == "" {
+				return userError("invalid_rule", "List rule names cannot be empty.")
+			}
+		}
 	case "replace":
 		if rule.Value == "" {
 			return userError("invalid_rule", "Replace rules need text to find.")
@@ -483,6 +495,25 @@ func validateRule(rule models.RenameRule) error {
 	case "trim":
 	default:
 		return userError("invalid_rule", "The recipe contains an unknown rule.")
+	}
+	return nil
+}
+
+func validateListRuleCounts(recipe models.RenameRecipe, itemCount int) error {
+	for _, rule := range recipe.Rules {
+		if !rule.Enabled || rule.Type != "list" {
+			continue
+		}
+		if len(rule.Values) != itemCount {
+			return userError(
+				"list_count_mismatch",
+				fmt.Sprintf(
+					"List rules need exactly %d names for this preview; received %d.",
+					itemCount,
+					len(rule.Values),
+				),
+			)
+		}
 	}
 	return nil
 }
@@ -569,7 +600,8 @@ func renameRuleCaseSensitive(rule models.RenameRule) bool {
 func inspectRenameItem(
 	path string,
 	rules []preparedRenameRule,
-	index int,
+	sequenceIndex int,
+	listIndex int,
 ) models.RenameItem {
 	absolute, err := filepath.Abs(strings.TrimSpace(path))
 	if err != nil {
@@ -606,16 +638,26 @@ func inspectRenameItem(
 		) {
 			continue
 		}
+		if prepared.rule.Type == "list" {
+			applyListRule(
+				prepared.rule,
+				&proposedStem,
+				&proposedExtension,
+				sequenceIndex,
+				listIndex,
+			)
+			continue
+		}
 		switch prepared.rule.ApplyTo {
 		case "extension":
-			proposedExtension = applyRule(proposedExtension, prepared, index)
+			proposedExtension = applyRule(proposedExtension, prepared, sequenceIndex)
 		case "both":
-			proposedStem = applyRule(proposedStem, prepared, index)
+			proposedStem = applyRule(proposedStem, prepared, sequenceIndex)
 			if proposedExtension != "" {
-				proposedExtension = applyRule(proposedExtension, prepared, index)
+				proposedExtension = applyRule(proposedExtension, prepared, sequenceIndex)
 			}
 		default:
-			proposedStem = applyRule(proposedStem, prepared, index)
+			proposedStem = applyRule(proposedStem, prepared, sequenceIndex)
 		}
 	}
 	proposedName := joinFileName(proposedStem, proposedExtension)
@@ -636,6 +678,29 @@ func inspectRenameItem(
 		item.Message = message
 	}
 	return item
+}
+
+func applyListRule(
+	rule models.RenameRule,
+	stem *string,
+	extension *string,
+	sequenceIndex int,
+	listIndex int,
+) {
+	value := rule.Values[listIndex]
+	switch rule.ApplyTo {
+	case "extension":
+		*extension = expandRuleValue(value, *extension, sequenceIndex)
+	case "both":
+		fullName := joinFileName(*stem, *extension)
+		newStem, dottedExtension := splitFileName(
+			expandRuleValue(value, fullName, sequenceIndex),
+		)
+		*stem = newStem
+		*extension = strings.TrimPrefix(dottedExtension, ".")
+	default:
+		*stem = expandRuleValue(value, *stem, sequenceIndex)
+	}
 }
 
 func applyNameOverride(item *models.RenameItem, proposedName string) {
@@ -723,8 +788,7 @@ func applyRule(name string, prepared preparedRenameRule, index int) string {
 	rule := prepared.rule
 	switch rule.Type {
 	case "newName":
-		result := strings.ReplaceAll(rule.Value, "{name}", name)
-		return strings.ReplaceAll(result, "{n}", strconv.Itoa(index+1))
+		return expandRuleValue(rule.Value, name, index)
 	case "replace":
 		if rule.UseRegex {
 			return prepared.matcher.ReplaceAllString(
@@ -759,6 +823,11 @@ func applyRule(name string, prepared preparedRenameRule, index int) string {
 		return strings.TrimSpace(name)
 	}
 	return name
+}
+
+func expandRuleValue(value string, name string, index int) string {
+	result := strings.ReplaceAll(value, "{name}", name)
+	return strings.ReplaceAll(result, "{n}", strconv.Itoa(index+1))
 }
 
 func normalizeRegexReplacement(value string) string {

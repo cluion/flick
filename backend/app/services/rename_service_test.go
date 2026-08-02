@@ -86,6 +86,65 @@ func TestRenameServiceNewNamePreservesExtensionAndExpandsPlaceholders(t *testing
 	}
 }
 
+func TestRenameServiceAppliesListRuleByItemOrder(t *testing.T) {
+	directory := t.TempDir()
+	first := writeRenameFixture(t, directory, "first.txt", "one")
+	second := writeRenameFixture(t, directory, "second.md", "two")
+	third := writeRenameFixture(t, directory, "third.csv", "three")
+	service := NewRenameServiceAt(filepath.Join(directory, "history.json"))
+
+	plan, err := service.Preview(
+		[]string{first, second, third},
+		`{"rules":[{"type":"list","enabled":true,`+
+			`"values":["alpha","beta-{n}","gamma"],"applyTo":"name"}]}`,
+		RenamePreviewOptions{ExcludedPaths: []string{second}},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	want := []string{"alpha.txt", "beta-2.md", "gamma.csv"}
+	for index, item := range plan.Items {
+		if item.ProposedName != want[index] {
+			t.Fatalf("item %d proposed name = %q, want %q", index, item.ProposedName, want[index])
+		}
+	}
+}
+
+func TestRenameServiceListRuleCanReplaceNameAndExtension(t *testing.T) {
+	directory := t.TempDir()
+	source := writeRenameFixture(t, directory, "draft.txt", "fixture")
+	service := NewRenameServiceAt(filepath.Join(directory, "history.json"))
+
+	plan, err := service.Preview(
+		[]string{source},
+		`{"rules":[{"type":"list","enabled":true,`+
+			`"values":["release.md"],"applyTo":"both"}]}`,
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if got := plan.Items[0].ProposedName; got != "release.md" {
+		t.Fatalf("proposed name = %q, want release.md", got)
+	}
+}
+
+func TestRenameServiceRejectsListCountMismatch(t *testing.T) {
+	directory := t.TempDir()
+	first := writeRenameFixture(t, directory, "first.txt", "one")
+	second := writeRenameFixture(t, directory, "second.txt", "two")
+	service := NewRenameServiceAt(filepath.Join(directory, "history.json"))
+
+	_, err := service.Preview(
+		[]string{first, second},
+		`{"rules":[{"type":"list","enabled":true,`+
+			`"values":["only-one"],"applyTo":"name"}]}`,
+	)
+	var userError *RenameUserError
+	if !errors.As(err, &userError) || userError.Code != "list_count_mismatch" {
+		t.Fatalf("preview error = %v", err)
+	}
+}
+
 func TestRenameServiceExcludesItemsFromSequenceAndApply(t *testing.T) {
 	directory := t.TempDir()
 	first := writeRenameFixture(t, directory, "first.txt", "one")

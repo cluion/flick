@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'package:bridra_flutter/bridra_flutter.dart' show RpcException;
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -731,6 +732,13 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                   builder: (context, constraints) {
                     final rules = _RulesPanel(
                       rules: _rules,
+                      currentNames:
+                          _plan != null &&
+                              listEquals(_plan!.sourcePaths, _paths)
+                          ? _plan!.proposedNames
+                          : _paths
+                                .map(_fileNameFromPath)
+                                .toList(growable: false),
                       enabled: connected && !_applying && !_scanning,
                       onAdd: _addRule,
                       onUpdate: _updateRule,
@@ -1084,6 +1092,7 @@ class _MessageBar extends StatelessWidget {
 class _RulesPanel extends StatelessWidget {
   const _RulesPanel({
     required this.rules,
+    required this.currentNames,
     required this.enabled,
     required this.onAdd,
     required this.onUpdate,
@@ -1092,6 +1101,7 @@ class _RulesPanel extends StatelessWidget {
   });
 
   final List<RenameRule> rules;
+  final List<String> currentNames;
   final bool enabled;
   final ValueChanged<RenameRuleType> onAdd;
   final void Function(int, RenameRule) onUpdate;
@@ -1179,6 +1189,7 @@ class _RulesPanel extends StatelessWidget {
                         child: _RuleCard(
                           index: index,
                           rule: rule,
+                          currentNames: currentNames,
                           enabled: enabled,
                           onChanged: (value) => onUpdate(index, value),
                           onRemove: () => onRemove(index),
@@ -1250,6 +1261,7 @@ class _RuleCard extends StatelessWidget {
   const _RuleCard({
     required this.index,
     required this.rule,
+    required this.currentNames,
     required this.enabled,
     required this.onChanged,
     required this.onRemove,
@@ -1257,6 +1269,7 @@ class _RuleCard extends StatelessWidget {
 
   final int index;
   final RenameRule rule;
+  final List<String> currentNames;
   final bool enabled;
   final ValueChanged<RenameRule> onChanged;
   final VoidCallback onRemove;
@@ -1318,6 +1331,7 @@ class _RuleCard extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
               child: _RuleFields(
                 rule: rule,
+                currentNames: currentNames,
                 enabled: enabled,
                 onChanged: onChanged,
               ),
@@ -1331,11 +1345,13 @@ class _RuleCard extends StatelessWidget {
 class _RuleFields extends StatelessWidget {
   const _RuleFields({
     required this.rule,
+    required this.currentNames,
     required this.enabled,
     required this.onChanged,
   });
 
   final RenameRule rule;
+  final List<String> currentNames;
   final bool enabled;
   final ValueChanged<RenameRule> onChanged;
 
@@ -1352,6 +1368,12 @@ class _RuleFields extends StatelessWidget {
           helperText: '可使用 {name} 與 {n}；預設不變更副檔名',
         ),
         onChanged: (value) => onChanged(rule.copyWith(value: value)),
+      ),
+      RenameRuleType.list => _ListRuleFields(
+        rule: rule,
+        currentNames: currentNames,
+        enabled: enabled,
+        onChanged: onChanged,
       ),
       RenameRuleType.replace => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1538,6 +1560,128 @@ class _RuleFields extends StatelessWidget {
       ],
     );
   }
+}
+
+class _ListRuleFields extends StatefulWidget {
+  const _ListRuleFields({
+    required this.rule,
+    required this.currentNames,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final RenameRule rule;
+  final List<String> currentNames;
+  final bool enabled;
+  final ValueChanged<RenameRule> onChanged;
+
+  @override
+  State<_ListRuleFields> createState() => _ListRuleFieldsState();
+}
+
+class _ListRuleFieldsState extends State<_ListRuleFields> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.rule.values.join('\n'),
+  );
+
+  @override
+  void didUpdateWidget(covariant _ListRuleFields oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!listEquals(oldWidget.rule.values, widget.rule.values)) {
+      final text = widget.rule.values.join('\n');
+      if (_controller.text != text) {
+        _controller.value = TextEditingValue(
+          text: text,
+          selection: TextSelection.collapsed(offset: text.length),
+        );
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final itemCount = widget.currentNames.length;
+    final nameCount = widget.rule.values.length;
+    final hasMismatch =
+        nameCount > 0 && itemCount > 0 && nameCount != itemCount;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        TextFormField(
+          key: ValueKey('${widget.rule.id}-values'),
+          controller: _controller,
+          enabled: widget.enabled,
+          minLines: 5,
+          maxLines: 9,
+          decoration: const InputDecoration(
+            labelText: '名稱清單',
+            hintText: '第一行對應第一個檔案\n第二行對應第二個檔案',
+            alignLabelWithHint: true,
+          ),
+          onChanged: (text) => widget.onChanged(
+            widget.rule.copyWith(values: parseRenameListText(text)),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            OutlinedButton.icon(
+              onPressed: widget.enabled && widget.currentNames.isNotEmpty
+                  ? _populate
+                  : null,
+              icon: const Icon(Icons.playlist_add_rounded, size: 17),
+              label: const Text('填入目前名稱'),
+            ),
+            const Spacer(),
+            Text(
+              itemCount == 0 ? '$nameCount 個名稱' : '$nameCount / $itemCount 個名稱',
+              style: TextStyle(
+                color: hasMismatch ? danger : subtle,
+                fontSize: 11,
+                fontWeight: hasMismatch ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+        if (hasMismatch)
+          const Padding(
+            padding: EdgeInsets.only(top: 5, left: 4),
+            child: Text(
+              '名稱數量必須與檔案數量完全一致',
+              style: TextStyle(color: danger, fontSize: 11),
+            ),
+          ),
+      ],
+    );
+  }
+
+  void _populate() {
+    final values = widget.currentNames
+        .map((name) => _listValueForTarget(name, widget.rule.target))
+        .toList(growable: false);
+    widget.onChanged(widget.rule.copyWith(values: values));
+  }
+}
+
+String _fileNameFromPath(String path) {
+  final slash = math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  return slash < 0 ? path : path.substring(slash + 1);
+}
+
+String _listValueForTarget(String fileName, RenameRuleTarget target) {
+  if (target == RenameRuleTarget.both) return fileName;
+  final dot = fileName.lastIndexOf('.');
+  final hasExtension = dot > 0 && dot < fileName.length - 1;
+  if (target == RenameRuleTarget.extension) {
+    return hasExtension ? fileName.substring(dot + 1) : '';
+  }
+  return hasExtension ? fileName.substring(0, dot) : fileName;
 }
 
 class _RuleConditionFields extends StatelessWidget {
