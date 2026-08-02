@@ -2,6 +2,12 @@
 
 All notable changes to Flick are documented in this file.
 
+## Unreleased
+
+### Changed
+
+- Upgraded the Bridra Go and Flutter runtimes together from 0.9.0 to 0.10.0
+
 ## 0.2.0 - 2026-08-02
 
 ### Added
