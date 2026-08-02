@@ -29,10 +29,20 @@ const (
 )
 
 type RenameService interface {
-	Preview(paths []string, encodedRecipe string) (models.RenamePlan, error)
+	Preview(
+		paths []string,
+		encodedRecipe string,
+		options ...RenamePreviewOptions,
+	) (models.RenamePlan, error)
 	Apply(planID string) (models.RenameBatch, error)
 	Undo(batchID string) (models.RenameBatch, error)
 	History() []models.RenameBatch
+}
+
+type RenamePreviewOptions struct {
+	ExcludedPaths []string
+	OverridePaths []string
+	OverrideNames []string
 }
 
 type RenameUserError struct {
@@ -86,6 +96,7 @@ func NewRenameServiceAt(historyPath string) RenameService {
 func (service *renameService) Preview(
 	paths []string,
 	encodedRecipe string,
+	options ...RenamePreviewOptions,
 ) (models.RenamePlan, error) {
 	service.mu.Lock()
 	defer service.mu.Unlock()
@@ -111,6 +122,10 @@ func (service *renameService) Preview(
 	if err != nil {
 		return models.RenamePlan{}, err
 	}
+	customizations, err := preparePreviewCustomizations(paths, options)
+	if err != nil {
+		return models.RenamePlan{}, err
+	}
 
 	plan := models.RenamePlan{
 		ID:        newID("plan"),
@@ -118,19 +133,99 @@ func (service *renameService) Preview(
 		Items:     make([]models.RenameItem, 0, len(paths)),
 	}
 	seenSources := make(map[string]struct{}, len(paths))
-	for index, path := range paths {
-		item := inspectRenameItem(path, preparedRules, index)
-		key := comparablePath(item.SourcePath)
-		if _, exists := seenSources[key]; exists {
+	sequenceIndex := 0
+	for _, path := range paths {
+		key := comparableInputPath(path)
+		_, excluded := customizations.excluded[key]
+		item := inspectRenameItem(path, preparedRules, sequenceIndex)
+		item.Included = !excluded
+		if item.Included {
+			sequenceIndex++
+		}
+		if override, exists := customizations.overrides[key]; exists {
+			applyNameOverride(&item, override)
+		}
+		sourceKey := comparablePath(item.SourcePath)
+		if _, exists := seenSources[sourceKey]; exists {
 			item.Status = models.RenameStatusError
 			item.Message = "The same file was added more than once."
 		}
-		seenSources[key] = struct{}{}
+		seenSources[sourceKey] = struct{}{}
 		plan.Items = append(plan.Items, item)
 	}
 	validatePlanCollisions(plan.Items)
 	service.plans[plan.ID] = plan
 	return plan, nil
+}
+
+type previewCustomizations struct {
+	excluded  map[string]struct{}
+	overrides map[string]string
+}
+
+func preparePreviewCustomizations(
+	paths []string,
+	options []RenamePreviewOptions,
+) (previewCustomizations, error) {
+	result := previewCustomizations{
+		excluded:  make(map[string]struct{}),
+		overrides: make(map[string]string),
+	}
+	if len(options) == 0 {
+		return result, nil
+	}
+	if len(options) > 1 {
+		return result, userError(
+			"invalid_customizations",
+			"Only one set of preview customizations is supported.",
+		)
+	}
+	option := options[0]
+	if len(option.OverridePaths) != len(option.OverrideNames) {
+		return result, userError(
+			"invalid_overrides",
+			"Manual file names must match their source paths.",
+		)
+	}
+	selected := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		selected[comparableInputPath(path)] = struct{}{}
+	}
+	for _, path := range option.ExcludedPaths {
+		key := comparableInputPath(path)
+		if _, exists := selected[key]; !exists {
+			return result, userError(
+				"invalid_exclusions",
+				"An excluded file is not part of this preview.",
+			)
+		}
+		result.excluded[key] = struct{}{}
+	}
+	for index, path := range option.OverridePaths {
+		key := comparableInputPath(path)
+		if _, exists := selected[key]; !exists {
+			return result, userError(
+				"invalid_overrides",
+				"A manually named file is not part of this preview.",
+			)
+		}
+		if _, exists := result.overrides[key]; exists {
+			return result, userError(
+				"invalid_overrides",
+				"A file can only have one manual name.",
+			)
+		}
+		result.overrides[key] = option.OverrideNames[index]
+	}
+	return result, nil
+}
+
+func comparableInputPath(path string) string {
+	absolute, err := filepath.Abs(strings.TrimSpace(path))
+	if err != nil {
+		return comparablePath(path)
+	}
+	return comparablePath(absolute)
 }
 
 func (service *renameService) Apply(planID string) (models.RenameBatch, error) {
@@ -543,6 +638,24 @@ func inspectRenameItem(
 	return item
 }
 
+func applyNameOverride(item *models.RenameItem, proposedName string) {
+	item.Overridden = true
+	if item.Status == models.RenameStatusError {
+		return
+	}
+	item.ProposedName = proposedName
+	item.TargetPath = filepath.Join(filepath.Dir(item.SourcePath), proposedName)
+	item.Status = models.RenameStatusReady
+	item.Message = ""
+	if item.OriginalName == proposedName {
+		item.Status = models.RenameStatusUnchanged
+		item.Message = "No change"
+	} else if message := invalidFileNameMessage(proposedName); message != "" {
+		item.Status = models.RenameStatusError
+		item.Message = message
+	}
+}
+
 func ruleConditionMatches(
 	prepared preparedRenameRule,
 	originalName string,
@@ -727,11 +840,14 @@ func invalidFileNameMessage(name string) string {
 func validatePlanCollisions(items []models.RenameItem) {
 	sourceByKey := make(map[string]int, len(items))
 	for index, item := range items {
+		if !item.Included {
+			continue
+		}
 		sourceByKey[comparablePath(item.SourcePath)] = index
 	}
 	targets := make(map[string][]int, len(items))
 	for index, item := range items {
-		if item.Status == models.RenameStatusError {
+		if !item.Included || item.Status == models.RenameStatusError {
 			continue
 		}
 		key := comparablePath(item.TargetPath)
@@ -748,7 +864,7 @@ func validatePlanCollisions(items []models.RenameItem) {
 	}
 	for index := range items {
 		item := &items[index]
-		if item.Status != models.RenameStatusReady {
+		if !item.Included || item.Status != models.RenameStatusReady {
 			continue
 		}
 		if _, err := os.Lstat(item.TargetPath); err != nil {
@@ -876,7 +992,7 @@ func rollbackUndoCommitted(items []models.RenameBatchItem, restored int) {
 func readyItems(items []models.RenameItem) []models.RenameItem {
 	result := make([]models.RenameItem, 0, len(items))
 	for _, item := range items {
-		if item.Status == models.RenameStatusReady {
+		if item.Included && item.Status == models.RenameStatusReady {
 			result = append(result, item)
 		}
 	}
@@ -885,7 +1001,7 @@ func readyItems(items []models.RenameItem) []models.RenameItem {
 
 func hasPlanErrors(items []models.RenameItem) bool {
 	for _, item := range items {
-		if item.Status == models.RenameStatusError {
+		if item.Included && item.Status == models.RenameStatusError {
 			return true
 		}
 	}

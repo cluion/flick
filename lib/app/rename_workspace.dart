@@ -37,12 +37,15 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   RenameHistory? _history;
   String? _appVersion;
   List<String> _paths = const [];
+  final Set<String> _excludedPaths = {};
+  final Map<String, String> _nameOverrides = {};
   List<RenameRule> _rules = [RenameRule.create(RenameRuleType.newName)];
   Timer? _previewTimer;
   Object? _error;
   String? _notice;
   var _connecting = true;
   var _previewing = false;
+  var _previewPending = false;
   var _previewFailed = false;
   var _scanning = false;
   var _applying = false;
@@ -227,6 +230,8 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   void _removePath(String path) {
     setState(() {
       _paths = _paths.where((candidate) => candidate != path).toList();
+      _excludedPaths.remove(path);
+      _nameOverrides.remove(path);
       _plan = null;
     });
     _schedulePreview(immediate: true);
@@ -237,10 +242,46 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     _previewTimer?.cancel();
     setState(() {
       _paths = const [];
+      _excludedPaths.clear();
+      _nameOverrides.clear();
       _plan = null;
       _error = null;
+      _previewing = false;
+      _previewPending = false;
       _previewFailed = false;
     });
+  }
+
+  void _setPathIncluded(String path, bool included) {
+    setState(() {
+      if (included) {
+        _excludedPaths.remove(path);
+      } else {
+        _excludedPaths.add(path);
+      }
+      _notice = null;
+    });
+    _schedulePreview();
+  }
+
+  Future<void> _editProposedName(String path, String proposedName) async {
+    final result = await showDialog<_NameOverrideResult>(
+      context: context,
+      builder: (context) => _NameOverrideDialog(
+        initialName: _nameOverrides[path] ?? proposedName,
+        hasOverride: _nameOverrides.containsKey(path),
+      ),
+    );
+    if (result == null || !mounted) return;
+    setState(() {
+      if (result.clear) {
+        _nameOverrides.remove(path);
+      } else {
+        _nameOverrides[path] = result.name!;
+      }
+      _notice = null;
+    });
+    _schedulePreview(immediate: true);
   }
 
   void _updateRule(int index, RenameRule rule) {
@@ -280,23 +321,40 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
 
   void _schedulePreview({bool immediate = false}) {
     _previewTimer?.cancel();
+    final generation = ++_previewGeneration;
     if (_paths.isEmpty || _backend == null) {
-      if (mounted) setState(() => _plan = null);
+      if (mounted) {
+        setState(() {
+          _plan = null;
+          _previewing = false;
+          _previewPending = false;
+        });
+      }
       return;
     }
+    if (!_previewPending) setState(() => _previewPending = true);
     if (immediate) {
-      unawaited(_preview());
+      unawaited(_preview(generation));
       return;
     }
     _previewTimer = Timer(const Duration(milliseconds: 220), () {
-      unawaited(_preview());
+      _previewTimer = null;
+      unawaited(_preview(generation));
     });
   }
 
-  Future<void> _preview() async {
+  Future<void> _preview(int generation) async {
+    if (!mounted || generation != _previewGeneration) return;
     final backend = _backend;
-    if (backend == null || _paths.isEmpty) return;
-    final generation = ++_previewGeneration;
+    if (backend == null || _paths.isEmpty) {
+      if (mounted && generation == _previewGeneration) {
+        setState(() {
+          _previewing = false;
+          _previewPending = false;
+        });
+      }
+      return;
+    }
     setState(() {
       _previewing = true;
       _previewFailed = false;
@@ -304,7 +362,20 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     });
     try {
       final plan = await backend.previewRename(
-        PreviewRenameRequest(paths: _paths, recipe: encodeRenameRecipe(_rules)),
+        PreviewRenameRequest(
+          paths: _paths,
+          recipe: encodeRenameRecipe(_rules),
+          excludedPaths: _paths
+              .where(_excludedPaths.contains)
+              .toList(growable: false),
+          overridePaths: _paths
+              .where(_nameOverrides.containsKey)
+              .toList(growable: false),
+          overrideNames: _paths
+              .where(_nameOverrides.containsKey)
+              .map((path) => _nameOverrides[path]!)
+              .toList(growable: false),
+        ),
       );
       if (!mounted || generation != _previewGeneration) return;
       setState(() {
@@ -320,7 +391,10 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
       });
     } finally {
       if (mounted && generation == _previewGeneration) {
-        setState(() => _previewing = false);
+        setState(() {
+          _previewing = false;
+          _previewPending = false;
+        });
       }
     }
   }
@@ -332,6 +406,8 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
         plan == null ||
         plan.errorCount > 0 ||
         plan.renameableCount == 0 ||
+        _previewing ||
+        _previewPending ||
         _applying) {
       return;
     }
@@ -372,7 +448,10 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
         _history = history;
         _notice = '已安全重新命名 ${result.changedCount} 個檔案';
         _paths = const [];
+        _excludedPaths.clear();
+        _nameOverrides.clear();
         _plan = null;
+        _previewPending = false;
       });
     } on Object catch (error) {
       if (mounted) setState(() => _error = error);
@@ -402,7 +481,10 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
         _history = refreshed;
         _notice = '已復原 ${result.changedCount} 個檔案';
         _paths = const [];
+        _excludedPaths.clear();
+        _nameOverrides.clear();
         _plan = null;
+        _previewPending = false;
       });
     } on Object catch (error) {
       if (mounted) setState(() => _error = error);
@@ -465,8 +547,11 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                     final preview = _PreviewPanel(
                       paths: _paths,
                       plan: _plan,
+                      excludedPaths: _excludedPaths,
+                      overridePaths: _nameOverrides.keys.toSet(),
                       connected: connected,
                       previewing: _previewing,
+                      previewPending: _previewPending,
                       previewFailed: _previewFailed,
                       applying: _applying,
                       scanning: _scanning,
@@ -474,6 +559,8 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                       onChooseFiles: _chooseFiles,
                       onChooseDirectory: _chooseDirectory,
                       onRemovePath: _removePath,
+                      onSetPathIncluded: _setPathIncluded,
+                      onEditProposedName: _editProposedName,
                       onClearPaths: _clearPaths,
                       onApply: _apply,
                       onDragEntered: () => setState(() => _dragging = true),
@@ -510,6 +597,86 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _NameOverrideResult {
+  const _NameOverrideResult.override(this.name) : clear = false;
+
+  const _NameOverrideResult.clear() : name = null, clear = true;
+
+  final String? name;
+  final bool clear;
+}
+
+class _NameOverrideDialog extends StatefulWidget {
+  const _NameOverrideDialog({
+    required this.initialName,
+    required this.hasOverride,
+  });
+
+  final String initialName;
+  final bool hasOverride;
+
+  @override
+  State<_NameOverrideDialog> createState() => _NameOverrideDialogState();
+}
+
+class _NameOverrideDialogState extends State<_NameOverrideDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialName);
+    _controller.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: widget.initialName.length,
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    Navigator.pop(context, _NameOverrideResult.override(_controller.text));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: surfaceRaised,
+      title: const Text('修改這個檔名'),
+      content: SizedBox(
+        width: 460,
+        child: TextField(
+          key: const ValueKey('manual-name-field'),
+          controller: _controller,
+          autofocus: true,
+          onSubmitted: (_) => _submit(),
+          decoration: const InputDecoration(
+            labelText: '新檔名',
+            helperText: '請包含副檔名；儲存後仍會檢查重複與不安全字元',
+          ),
+        ),
+      ),
+      actions: [
+        if (widget.hasOverride)
+          TextButton(
+            onPressed: () =>
+                Navigator.pop(context, const _NameOverrideResult.clear()),
+            child: const Text('恢復規則結果'),
+          ),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('套用到預覽')),
+      ],
     );
   }
 }
@@ -1391,8 +1558,11 @@ class _PreviewPanel extends StatelessWidget {
   const _PreviewPanel({
     required this.paths,
     required this.plan,
+    required this.excludedPaths,
+    required this.overridePaths,
     required this.connected,
     required this.previewing,
+    required this.previewPending,
     required this.previewFailed,
     required this.applying,
     required this.scanning,
@@ -1400,6 +1570,8 @@ class _PreviewPanel extends StatelessWidget {
     required this.onChooseFiles,
     required this.onChooseDirectory,
     required this.onRemovePath,
+    required this.onSetPathIncluded,
+    required this.onEditProposedName,
     required this.onClearPaths,
     required this.onApply,
     required this.onDragEntered,
@@ -1409,8 +1581,11 @@ class _PreviewPanel extends StatelessWidget {
 
   final List<String> paths;
   final RenamePlan? plan;
+  final Set<String> excludedPaths;
+  final Set<String> overridePaths;
   final bool connected;
   final bool previewing;
+  final bool previewPending;
   final bool previewFailed;
   final bool applying;
   final bool scanning;
@@ -1418,6 +1593,9 @@ class _PreviewPanel extends StatelessWidget {
   final VoidCallback onChooseFiles;
   final VoidCallback onChooseDirectory;
   final ValueChanged<String> onRemovePath;
+  final void Function(String path, bool included) onSetPathIncluded;
+  final Future<void> Function(String path, String proposedName)
+  onEditProposedName;
   final VoidCallback onClearPaths;
   final VoidCallback onApply;
   final VoidCallback onDragEntered;
@@ -1430,11 +1608,14 @@ class _PreviewPanel extends StatelessWidget {
     final rowCount = currentPlan == null
         ? paths.length
         : [
+            paths.length,
             currentPlan.sourcePaths.length,
             currentPlan.originalNames.length,
             currentPlan.proposedNames.length,
             currentPlan.statuses.length,
             currentPlan.messages.length,
+            currentPlan.included.length,
+            currentPlan.overridden.length,
           ].reduce(math.min);
     final canApply =
         connected &&
@@ -1442,6 +1623,7 @@ class _PreviewPanel extends StatelessWidget {
         currentPlan.errorCount == 0 &&
         currentPlan.renameableCount > 0 &&
         !previewing &&
+        !previewPending &&
         !scanning &&
         !applying;
 
@@ -1498,8 +1680,13 @@ class _PreviewPanel extends StatelessWidget {
                 ],
               ),
             ),
-            if (previewing || scanning)
-              const LinearProgressIndicator(minHeight: 2),
+            SizedBox(
+              key: const ValueKey('preview-progress-slot'),
+              height: 2,
+              child: previewing || previewPending || scanning
+                  ? const LinearProgressIndicator(minHeight: 2)
+                  : const ColoredBox(color: Colors.transparent),
+            ),
             Expanded(
               child: paths.isEmpty
                   ? _DropEmptyState(
@@ -1518,8 +1705,9 @@ class _PreviewPanel extends StatelessWidget {
                             separatorBuilder: (_, _) =>
                                 const Divider(height: 1),
                             itemBuilder: (context, index) {
+                              final inputPath = paths[index];
                               final sourcePath = currentPlan == null
-                                  ? paths[index]
+                                  ? inputPath
                                   : currentPlan.sourcePaths[index];
                               return _PreviewRow(
                                 sourcePath: sourcePath,
@@ -1527,10 +1715,25 @@ class _PreviewPanel extends StatelessWidget {
                                 proposedName: currentPlan?.proposedNames[index],
                                 status: currentPlan?.statuses[index],
                                 message: currentPlan?.messages[index],
+                                included: !excludedPaths.contains(inputPath),
+                                overridden: overridePaths.contains(inputPath),
                                 previewFailed: previewFailed,
+                                onIncludedChanged: applying || scanning
+                                    ? null
+                                    : (included) => onSetPathIncluded(
+                                        inputPath,
+                                        included,
+                                      ),
+                                onEditName:
+                                    applying || scanning || currentPlan == null
+                                    ? null
+                                    : () => onEditProposedName(
+                                        inputPath,
+                                        currentPlan.proposedNames[index],
+                                      ),
                                 onRemove: applying || scanning
                                     ? null
-                                    : () => onRemovePath(sourcePath),
+                                    : () => onRemovePath(inputPath),
                               );
                             },
                           ),
@@ -1708,7 +1911,8 @@ class _PreviewColumns extends StatelessWidget {
       color: const Color(0xFF0F1218),
       child: const Row(
         children: [
-          SizedBox(width: 34),
+          SizedBox(width: 40),
+          SizedBox(width: 28),
           Expanded(
             flex: 5,
             child: Text('原始檔名', style: TextStyle(color: subtle, fontSize: 11)),
@@ -1733,7 +1937,11 @@ class _PreviewRow extends StatelessWidget {
     required this.proposedName,
     required this.status,
     required this.message,
+    required this.included,
+    required this.overridden,
     required this.previewFailed,
+    required this.onIncludedChanged,
+    required this.onEditName,
     required this.onRemove,
   });
 
@@ -1742,24 +1950,32 @@ class _PreviewRow extends StatelessWidget {
   final String? proposedName;
   final String? status;
   final String? message;
+  final bool included;
+  final bool overridden;
   final bool previewFailed;
+  final ValueChanged<bool>? onIncludedChanged;
+  final VoidCallback? onEditName;
   final VoidCallback? onRemove;
 
   @override
   Widget build(BuildContext context) {
     final state = status ?? (previewFailed ? 'error' : 'loading');
-    final color = switch (state) {
-      'ready' => mint,
-      'error' => danger,
-      'unchanged' => subtle,
-      _ => warning,
-    };
-    final icon = switch (state) {
-      'ready' => Icons.check_circle_rounded,
-      'error' => Icons.error_rounded,
-      'unchanged' => Icons.remove_circle_outline_rounded,
-      _ => Icons.schedule_rounded,
-    };
+    final color = !included
+        ? subtle
+        : switch (state) {
+            'ready' => mint,
+            'error' => danger,
+            'unchanged' => subtle,
+            _ => warning,
+          };
+    final icon = !included
+        ? Icons.remove_circle_outline_rounded
+        : switch (state) {
+            'ready' => Icons.check_circle_rounded,
+            'error' => Icons.error_rounded,
+            'unchanged' => Icons.remove_circle_outline_rounded,
+            _ => Icons.schedule_rounded,
+          };
     final pathSegments = sourcePath
         .split(RegExp(r'[/\\]'))
         .where((segment) => segment.isNotEmpty)
@@ -1770,19 +1986,34 @@ class _PreviewRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
       child: Row(
         children: [
-          SizedBox(width: 34, child: Icon(icon, color: color, size: 18)),
+          SizedBox(
+            width: 40,
+            child: Tooltip(
+              message: included ? '排除這個檔案' : '重新納入這個檔案',
+              child: Checkbox(
+                value: included,
+                onChanged: onIncludedChanged == null
+                    ? null
+                    : (value) => onIncludedChanged!(value ?? false),
+              ),
+            ),
+          ),
+          SizedBox(width: 28, child: Icon(icon, color: color, size: 18)),
           Expanded(
             flex: 5,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  originalName ?? fallbackName ?? sourcePath,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Color(0xFFD5D8E1),
-                    fontSize: 13,
+                Opacity(
+                  opacity: included ? 1 : 0.45,
+                  child: Text(
+                    originalName ?? fallbackName ?? sourcePath,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFFD5D8E1),
+                      fontSize: 13,
+                    ),
                   ),
                 ),
                 const SizedBox(height: 3),
@@ -1798,21 +2029,58 @@ class _PreviewRow extends StatelessWidget {
           const SizedBox(width: 18),
           Expanded(
             flex: 5,
-            child: Text(
-              proposedName ?? (previewFailed ? '預覽失敗，請檢查左側規則' : '正在計算預覽…'),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: state == 'error' ? danger : Colors.white,
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
+            child: Tooltip(
+              message: onEditName == null ? '' : '點一下直接修改這個檔名',
+              child: InkWell(
+                onTap: onEditName,
+                borderRadius: BorderRadius.circular(6),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 7),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Opacity(
+                          opacity: included ? 1 : 0.45,
+                          child: Text(
+                            proposedName ??
+                                (previewFailed ? '預覽失敗，請檢查左側規則' : '正在計算預覽…'),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: state == 'error' ? danger : Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ),
+                      if (overridden) ...[
+                        const SizedBox(width: 6),
+                        const Text(
+                          '手動',
+                          style: TextStyle(color: primaryBright, fontSize: 9),
+                        ),
+                      ],
+                      if (onEditName != null) ...[
+                        const SizedBox(width: 5),
+                        const Icon(
+                          Icons.edit_outlined,
+                          color: subtle,
+                          size: 14,
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
           SizedBox(
             width: 100,
             child: Text(
-              message?.isNotEmpty == true
+              !included
+                  ? '已排除'
+                  : message?.isNotEmpty == true
                   ? message!
                   : switch (state) {
                       'ready' => '可套用',
@@ -1867,22 +2135,33 @@ class _ActionBar extends StatelessWidget {
       ),
       child: Row(
         children: [
-          _CountBadge(
-            color: mint,
-            value: current?.renameableCount ?? 0,
-            label: '可改名',
-          ),
-          const SizedBox(width: 9),
-          _CountBadge(
-            color: subtle,
-            value: current?.unchangedCount ?? 0,
-            label: '無變更',
-          ),
-          const SizedBox(width: 9),
-          _CountBadge(
-            color: danger,
-            value: current?.errorCount ?? 0,
-            label: '錯誤',
+          Expanded(
+            child: Wrap(
+              spacing: 9,
+              runSpacing: 7,
+              children: [
+                _CountBadge(
+                  color: mint,
+                  value: current?.renameableCount ?? 0,
+                  label: '可改名',
+                ),
+                _CountBadge(
+                  color: subtle,
+                  value: current?.unchangedCount ?? 0,
+                  label: '無變更',
+                ),
+                _CountBadge(
+                  color: danger,
+                  value: current?.errorCount ?? 0,
+                  label: '錯誤',
+                ),
+                _CountBadge(
+                  color: warning,
+                  value: current?.excludedCount ?? 0,
+                  label: '已排除',
+                ),
+              ],
+            ),
           ),
           const Spacer(),
           FilledButton.icon(

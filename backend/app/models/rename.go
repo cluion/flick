@@ -41,6 +41,8 @@ type RenameItem struct {
 	TargetPath   string
 	Status       string
 	Message      string
+	Included     bool
+	Overridden   bool
 	Size         int64
 	ModifiedAt   int64
 }

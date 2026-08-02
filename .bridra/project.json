@@ -5,5 +5,5 @@
   "frameworkModule": "github.com/cluion/bridra/backend",
   "frameworkVersion": "0.9.0",
   "templateVersion": 2,
-  "protocolVersion": 1
+  "protocolVersion": 2
 }

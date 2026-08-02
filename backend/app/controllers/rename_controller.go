@@ -25,7 +25,15 @@ func (controller *RenameController) Preview(ctx *framework.Context) (any, error)
 	if err != nil {
 		return nil, err
 	}
-	plan, err := controller.service.Preview(request.Paths, request.Recipe)
+	plan, err := controller.service.Preview(
+		request.Paths,
+		request.Recipe,
+		services.RenamePreviewOptions{
+			ExcludedPaths: request.ExcludedPaths,
+			OverridePaths: request.OverridePaths,
+			OverrideNames: request.OverrideNames,
+		},
+	)
 	if err != nil {
 		return nil, renderRenameError(err)
 	}
@@ -96,6 +104,8 @@ func newRenamePlanResponse(plan models.RenamePlan) responses.RenamePlanResponse 
 		TargetPaths:   make([]string, 0, len(plan.Items)),
 		Statuses:      make([]string, 0, len(plan.Items)),
 		Messages:      make([]string, 0, len(plan.Items)),
+		Included:      make([]bool, 0, len(plan.Items)),
+		Overridden:    make([]bool, 0, len(plan.Items)),
 	}
 	for _, item := range plan.Items {
 		response.SourcePaths = append(response.SourcePaths, item.SourcePath)
@@ -104,6 +114,12 @@ func newRenamePlanResponse(plan models.RenamePlan) responses.RenamePlanResponse 
 		response.TargetPaths = append(response.TargetPaths, item.TargetPath)
 		response.Statuses = append(response.Statuses, item.Status)
 		response.Messages = append(response.Messages, item.Message)
+		response.Included = append(response.Included, item.Included)
+		response.Overridden = append(response.Overridden, item.Overridden)
+		if !item.Included {
+			response.ExcludedCount++
+			continue
+		}
 		switch item.Status {
 		case models.RenameStatusReady:
 			response.RenameableCount++

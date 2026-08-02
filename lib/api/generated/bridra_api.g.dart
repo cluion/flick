@@ -2,7 +2,7 @@
 
 import 'package:bridra_flutter/bridra_flutter.dart';
 
-const supportedBackendProtocolVersion = 1;
+const supportedBackendProtocolVersion = 2;
 
 abstract final class BridraMethods {
   static const systemHealth = 'system.health';
@@ -58,14 +58,26 @@ class DirectoryScanResult {
 }
 
 class PreviewRenameRequest {
-  const PreviewRenameRequest({required this.paths, required this.recipe});
+  const PreviewRenameRequest({
+    required this.paths,
+    required this.recipe,
+    required this.excludedPaths,
+    required this.overridePaths,
+    required this.overrideNames,
+  });
 
   final List<String> paths;
   final String recipe;
+  final List<String> excludedPaths;
+  final List<String> overridePaths;
+  final List<String> overrideNames;
 
   Map<String, Object?> toJson() => {
     'paths': paths,
     'recipe': recipe,
+    'excludedPaths': excludedPaths,
+    'overridePaths': overridePaths,
+    'overrideNames': overrideNames,
   };
 }
 
@@ -78,9 +90,12 @@ class RenamePlan {
     required this.targetPaths,
     required this.statuses,
     required this.messages,
+    required this.included,
+    required this.overridden,
     required this.renameableCount,
     required this.unchangedCount,
     required this.errorCount,
+    required this.excludedCount,
   });
 
   final String planId;
@@ -90,9 +105,12 @@ class RenamePlan {
   final List<String> targetPaths;
   final List<String> statuses;
   final List<String> messages;
+  final List<bool> included;
+  final List<bool> overridden;
   final int renameableCount;
   final int unchangedCount;
   final int errorCount;
+  final int excludedCount;
 }
 
 class ApplyRenameRequest {
@@ -246,9 +264,12 @@ class BridraRpcApi implements BridraApi {
         targetPaths: _requireListField<String>(result, 'targetPaths'),
         statuses: _requireListField<String>(result, 'statuses'),
         messages: _requireListField<String>(result, 'messages'),
+        included: _requireListField<bool>(result, 'included'),
+        overridden: _requireListField<bool>(result, 'overridden'),
         renameableCount: _requireField<int>(result, 'renameableCount'),
         unchangedCount: _requireField<int>(result, 'unchangedCount'),
         errorCount: _requireField<int>(result, 'errorCount'),
+        excludedCount: _requireField<int>(result, 'excludedCount'),
       );
     } on BackendProtocolException {
       rethrow;

@@ -23,9 +23,12 @@ type RenamePlanResponse struct {
 	TargetPaths     []string `json:"targetPaths"`
 	Statuses        []string `json:"statuses"`
 	Messages        []string `json:"messages"`
+	Included        []bool   `json:"included"`
+	Overridden      []bool   `json:"overridden"`
 	RenameableCount int      `json:"renameableCount"`
 	UnchangedCount  int      `json:"unchangedCount"`
 	ErrorCount      int      `json:"errorCount"`
+	ExcludedCount   int      `json:"excludedCount"`
 }
 
 type ApplyRenameResponse struct {

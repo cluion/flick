@@ -1,11 +1,20 @@
+import 'dart:io';
+
 import 'package:bridra_flutter/bridra_flutter.dart';
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flick/api/backend_gateway.dart';
 import 'package:flick/app/flick_app.dart';
-import 'package:flutter/material.dart' show Icons, Size;
+import 'package:flutter/material.dart'
+    show FilledButton, Icons, Offset, Size, ValueKey;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class FakeBackend implements BackendGateway {
+  final List<PreviewRenameRequest> previewRequests = [];
+
+  PreviewRenameRequest? get lastPreviewRequest =>
+      previewRequests.isEmpty ? null : previewRequests.last;
+
   @override
   Future<void> close() async {}
 
@@ -14,7 +23,7 @@ class FakeBackend implements BackendGateway {
     return const HealthInfo(
       status: 'ok',
       frameworkVersion: '0.9.0',
-      protocolVersion: 1,
+      protocolVersion: 2,
       runtime: 'Go sidecar',
       architecture: 'Middleware -> Controller -> Service',
     );
@@ -45,18 +54,40 @@ class FakeBackend implements BackendGateway {
     PreviewRenameRequest request, {
     RpcCancellationToken? cancellationToken,
   }) async {
+    previewRequests.add(request);
+    final overrides = <String, String>{
+      for (var index = 0; index < request.overridePaths.length; index++)
+        request.overridePaths[index]: request.overrideNames[index],
+    };
+    final included = request.paths
+        .map((path) => !request.excludedPaths.contains(path))
+        .toList(growable: false);
+    final proposedNames = request.paths
+        .map((path) => overrides[path] ?? 'final.txt')
+        .toList(growable: false);
     return RenamePlan(
       planId: 'plan-1',
       sourcePaths: request.paths,
-      originalNames: const ['draft.txt'],
-      proposedNames: const ['final.txt'],
-      targetPaths: const ['/tmp/final.txt'],
-      statuses: const ['ready'],
-      messages: const [''],
-      renameableCount: 1,
+      originalNames: request.paths.map(_fileName).toList(growable: false),
+      proposedNames: proposedNames,
+      targetPaths: proposedNames
+          .map((name) => '/tmp/$name')
+          .toList(growable: false),
+      statuses: request.paths.map((_) => 'ready').toList(growable: false),
+      messages: request.paths.map((_) => '').toList(growable: false),
+      included: included,
+      overridden: request.paths
+          .map(overrides.containsKey)
+          .toList(growable: false),
+      renameableCount: included.where((value) => value).length,
       unchangedCount: 0,
       errorCount: 0,
+      excludedCount: included.where((value) => !value).length,
     );
+  }
+
+  static String _fileName(String path) {
+    return path.split(RegExp(r'[/\\]')).last;
   }
 
   @override
@@ -124,7 +155,7 @@ void main() {
     expect(find.text('v0.1.0 (1)'), findsOneWidget);
     expect(find.text('本機引擎就緒'), findsOneWidget);
     expect(
-      find.byTooltip('Go sidecar · Bridra 0.9.0 · Protocol 1'),
+      find.byTooltip('Go sidecar · Bridra 0.9.0 · Protocol 2'),
       findsOneWidget,
     );
     expect(find.text('改名規則'), findsOneWidget);
@@ -181,5 +212,149 @@ void main() {
     expect(find.text('比對方式'), findsOneWidget);
     expect(find.text('條件內容'), findsOneWidget);
     expect(find.text('反向條件（排除符合項目）'), findsOneWidget);
+  });
+
+  testWidgets('excludes one file from the rename preview', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(1280, 820);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final directory = Directory.systemTemp.createTempSync('flick-widget-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final file = File('${directory.path}/draft.txt');
+    file.writeAsStringSync('fixture');
+    final backend = FakeBackend();
+
+    await tester.pumpWidget(FlickApp(connector: () async => backend));
+    await tester.pumpAndSettle();
+    await _dropFile(tester, file.path, backend);
+    await _pumpAsyncWork(tester);
+
+    expect(find.byTooltip('排除這個檔案'), findsOneWidget);
+    await tester.tap(find.byTooltip('排除這個檔案'));
+    await _pumpAsyncWork(tester);
+
+    expect(backend.lastPreviewRequest?.excludedPaths, [file.path]);
+    expect(find.text('1 已排除'), findsOneWidget);
+    expect(find.text('0 可改名'), findsOneWidget);
+  });
+
+  testWidgets('keeps and clears a manual preview name', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(1280, 820);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final directory = Directory.systemTemp.createTempSync('flick-widget-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final file = File('${directory.path}/draft.txt');
+    file.writeAsStringSync('fixture');
+    final backend = FakeBackend();
+
+    await tester.pumpWidget(FlickApp(connector: () async => backend));
+    await tester.pumpAndSettle();
+    await _dropFile(tester, file.path, backend);
+    await _pumpAsyncWork(tester);
+
+    await tester.tap(find.byTooltip('點一下直接修改這個檔名'));
+    await _pumpAsyncWork(tester);
+    await tester.enterText(
+      find.byKey(const ValueKey('manual-name-field')),
+      'chosen.md',
+    );
+    await tester.tap(find.text('套用到預覽'));
+    await _pumpAsyncWork(tester);
+
+    expect(backend.lastPreviewRequest?.overridePaths, [file.path]);
+    expect(backend.lastPreviewRequest?.overrideNames, ['chosen.md']);
+    expect(find.text('chosen.md'), findsOneWidget);
+    expect(find.text('手動'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('點一下直接修改這個檔名'));
+    await _pumpAsyncWork(tester);
+    await tester.tap(find.text('恢復規則結果'));
+    await _pumpAsyncWork(tester);
+
+    expect(backend.lastPreviewRequest?.overridePaths, isEmpty);
+    expect(find.text('final.txt'), findsOneWidget);
+    expect(find.text('手動'), findsNothing);
+  });
+
+  testWidgets('debounces rapid exclusions without shifting the list', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(1280, 820);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final directory = Directory.systemTemp.createTempSync('flick-widget-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final file = File('${directory.path}/draft.txt');
+    file.writeAsStringSync('fixture');
+    final backend = FakeBackend();
+
+    await tester.pumpWidget(FlickApp(connector: () async => backend));
+    await tester.pumpAndSettle();
+    await _dropFile(tester, file.path, backend);
+    await _pumpAsyncWork(tester);
+
+    final baselineRequests = backend.previewRequests.length;
+    final columnsY = tester.getTopLeft(find.text('原始檔名')).dy;
+    final progressSlot = find.byKey(const ValueKey('preview-progress-slot'));
+    expect(tester.getSize(progressSlot).height, 2);
+
+    await tester.tap(find.byTooltip('排除這個檔案'));
+    await tester.pump(const Duration(milliseconds: 40));
+    expect(backend.previewRequests.length, baselineRequests);
+    expect(tester.getTopLeft(find.text('原始檔名')).dy, columnsY);
+    expect(
+      tester
+          .widget<FilledButton>(find.widgetWithText(FilledButton, '開始批次改名'))
+          .onPressed,
+      isNull,
+    );
+
+    await tester.tap(find.byTooltip('重新納入這個檔案'));
+    await tester.pump(const Duration(milliseconds: 40));
+    await tester.tap(find.byTooltip('排除這個檔案'));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(backend.previewRequests.length, baselineRequests);
+    expect(tester.getTopLeft(find.text('原始檔名')).dy, columnsY);
+
+    await tester.pump(const Duration(milliseconds: 150));
+    await _pumpAsyncWork(tester);
+    expect(backend.previewRequests.length, baselineRequests + 1);
+    expect(backend.lastPreviewRequest?.excludedPaths, [file.path]);
+    expect(tester.getTopLeft(find.text('原始檔名')).dy, columnsY);
+    expect(tester.getSize(progressSlot).height, 2);
+  });
+}
+
+Future<void> _pumpAsyncWork(WidgetTester tester) async {
+  for (var index = 0; index < 6; index++) {
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+}
+
+Future<void> _dropFile(
+  WidgetTester tester,
+  String path,
+  FakeBackend backend,
+) async {
+  final target = tester.widget<DropTarget>(find.byType(DropTarget));
+  await tester.runAsync(() async {
+    target.onDragDone!(
+      DropDoneDetails(
+        files: [DropItemFile(path)],
+        localPosition: Offset.zero,
+        globalPosition: Offset.zero,
+      ),
+    );
+    for (var index = 0; index < 20; index++) {
+      if (backend.lastPreviewRequest != null) return;
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
   });
 }

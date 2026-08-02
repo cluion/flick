@@ -86,6 +86,105 @@ func TestRenameServiceNewNamePreservesExtensionAndExpandsPlaceholders(t *testing
 	}
 }
 
+func TestRenameServiceExcludesItemsFromSequenceAndApply(t *testing.T) {
+	directory := t.TempDir()
+	first := writeRenameFixture(t, directory, "first.txt", "one")
+	second := writeRenameFixture(t, directory, "second.txt", "two")
+	third := writeRenameFixture(t, directory, "third.txt", "three")
+	service := NewRenameServiceAt(filepath.Join(directory, "history.json"))
+
+	plan, err := service.Preview(
+		[]string{first, second, third},
+		`{"rules":[{"type":"sequence","enabled":true,"start":1,"padding":2}]}`,
+		RenamePreviewOptions{ExcludedPaths: []string{second}},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if !plan.Items[0].Included || plan.Items[1].Included || !plan.Items[2].Included {
+		t.Fatalf("included states = %#v", plan.Items)
+	}
+	if got := plan.Items[2].ProposedName; got != "third02.txt" {
+		t.Fatalf("third proposed name = %q, want third02.txt", got)
+	}
+
+	batch, err := service.Apply(plan.ID)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(batch.Items) != 2 {
+		t.Fatalf("batch items = %d, want 2", len(batch.Items))
+	}
+	assertPathExists(t, second)
+	assertPathExists(t, filepath.Join(directory, "first01.txt"))
+	assertPathExists(t, filepath.Join(directory, "third02.txt"))
+}
+
+func TestRenameServiceAppliesManualNameOverride(t *testing.T) {
+	directory := t.TempDir()
+	source := writeRenameFixture(t, directory, "draft.txt", "fixture")
+	service := NewRenameServiceAt(filepath.Join(directory, "history.json"))
+
+	plan, err := service.Preview(
+		[]string{source},
+		`{"rules":[{"type":"prefix","enabled":true,"value":"final-"}]}`,
+		RenamePreviewOptions{
+			OverridePaths: []string{source},
+			OverrideNames: []string{"chosen.md"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	item := plan.Items[0]
+	if !item.Overridden || item.ProposedName != "chosen.md" {
+		t.Fatalf("overridden item = %#v", item)
+	}
+	if _, err := service.Apply(plan.ID); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	assertPathExists(t, filepath.Join(directory, "chosen.md"))
+}
+
+func TestRenameServiceExcludedErrorsDoNotBlockApply(t *testing.T) {
+	directory := t.TempDir()
+	source := writeRenameFixture(t, directory, "draft.txt", "fixture")
+	missing := filepath.Join(directory, "missing.txt")
+	service := NewRenameServiceAt(filepath.Join(directory, "history.json"))
+
+	plan, err := service.Preview(
+		[]string{source, missing},
+		`{"rules":[{"type":"prefix","enabled":true,"value":"final-"}]}`,
+		RenamePreviewOptions{ExcludedPaths: []string{missing}},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if plan.Items[1].Status != "error" || plan.Items[1].Included {
+		t.Fatalf("excluded missing item = %#v", plan.Items[1])
+	}
+	if _, err := service.Apply(plan.ID); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	assertPathExists(t, filepath.Join(directory, "final-draft.txt"))
+}
+
+func TestRenameServiceRejectsMismatchedManualOverrides(t *testing.T) {
+	directory := t.TempDir()
+	source := writeRenameFixture(t, directory, "draft.txt", "fixture")
+	service := NewRenameServiceAt(filepath.Join(directory, "history.json"))
+
+	_, err := service.Preview(
+		[]string{source},
+		`{"rules":[]}`,
+		RenamePreviewOptions{OverridePaths: []string{source}},
+	)
+	var userError *RenameUserError
+	if !errors.As(err, &userError) || userError.Code != "invalid_overrides" {
+		t.Fatalf("preview error = %v", err)
+	}
+}
+
 func TestRenameServiceSupportsAdvancedReplaceOptions(t *testing.T) {
 	tests := []struct {
 		name         string

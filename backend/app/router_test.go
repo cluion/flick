@@ -20,7 +20,10 @@ func TestGeneratedApplicationPipeline(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 	params, err := json.Marshal(map[string]any{
-		"paths": []string{path},
+		"paths":         []string{path},
+		"excludedPaths": []string{},
+		"overridePaths": []string{path},
+		"overrideNames": []string{"chosen.txt"},
 		"recipe": `{"rules":[{"type":"replace","enabled":true,` +
 			`"value":"draft","replacement":"final"}]}`,
 	})
@@ -38,6 +41,26 @@ func TestGeneratedApplicationPipeline(t *testing.T) {
 	}
 	if response.Meta == nil {
 		t.Fatal("response metadata is missing")
+	}
+	encoded, err := json.Marshal(response.Result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	var result struct {
+		ProposedNames   []string `json:"proposedNames"`
+		Included        []bool   `json:"included"`
+		Overridden      []bool   `json:"overridden"`
+		RenameableCount int      `json:"renameableCount"`
+		ExcludedCount   int      `json:"excludedCount"`
+	}
+	if err := json.Unmarshal(encoded, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if len(result.ProposedNames) != 1 || result.ProposedNames[0] != "chosen.txt" ||
+		len(result.Included) != 1 || !result.Included[0] ||
+		len(result.Overridden) != 1 || !result.Overridden[0] ||
+		result.RenameableCount != 1 || result.ExcludedCount != 0 {
+		t.Fatalf("rename preview = %#v", result)
 	}
 }
 
