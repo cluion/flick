@@ -25,6 +25,8 @@ type RenamePlanResponse struct {
 	Messages        []string `json:"messages"`
 	Included        []bool   `json:"included"`
 	Overridden      []bool   `json:"overridden"`
+	Sizes           []int    `json:"sizes"`
+	ModifiedAt      []int    `json:"modifiedAt"`
 	RenameableCount int      `json:"renameableCount"`
 	UnchangedCount  int      `json:"unchangedCount"`
 	ErrorCount      int      `json:"errorCount"`

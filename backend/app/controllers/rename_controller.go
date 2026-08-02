@@ -106,6 +106,8 @@ func newRenamePlanResponse(plan models.RenamePlan) responses.RenamePlanResponse 
 		Messages:      make([]string, 0, len(plan.Items)),
 		Included:      make([]bool, 0, len(plan.Items)),
 		Overridden:    make([]bool, 0, len(plan.Items)),
+		Sizes:         make([]int, 0, len(plan.Items)),
+		ModifiedAt:    make([]int, 0, len(plan.Items)),
 	}
 	for _, item := range plan.Items {
 		response.SourcePaths = append(response.SourcePaths, item.SourcePath)
@@ -116,6 +118,8 @@ func newRenamePlanResponse(plan models.RenamePlan) responses.RenamePlanResponse 
 		response.Messages = append(response.Messages, item.Message)
 		response.Included = append(response.Included, item.Included)
 		response.Overridden = append(response.Overridden, item.Overridden)
+		response.Sizes = append(response.Sizes, int(item.Size))
+		response.ModifiedAt = append(response.ModifiedAt, int(item.ModifiedAt))
 		if !item.Included {
 			response.ExcludedCount++
 			continue

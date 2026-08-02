@@ -50,6 +50,8 @@ func TestGeneratedApplicationPipeline(t *testing.T) {
 		ProposedNames   []string `json:"proposedNames"`
 		Included        []bool   `json:"included"`
 		Overridden      []bool   `json:"overridden"`
+		Sizes           []int    `json:"sizes"`
+		ModifiedAt      []int    `json:"modifiedAt"`
 		RenameableCount int      `json:"renameableCount"`
 		ExcludedCount   int      `json:"excludedCount"`
 	}
@@ -59,6 +61,8 @@ func TestGeneratedApplicationPipeline(t *testing.T) {
 	if len(result.ProposedNames) != 1 || result.ProposedNames[0] != "chosen.txt" ||
 		len(result.Included) != 1 || !result.Included[0] ||
 		len(result.Overridden) != 1 || !result.Overridden[0] ||
+		len(result.Sizes) != 1 || result.Sizes[0] != len("draft") ||
+		len(result.ModifiedAt) != 1 || result.ModifiedAt[0] <= 0 ||
 		result.RenameableCount != 1 || result.ExcludedCount != 0 {
 		t.Fatalf("rename preview = %#v", result)
 	}

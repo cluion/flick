@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/backend_gateway.dart';
 import '../domain/directory_import_options.dart';
+import '../domain/preview_list_options.dart';
 import '../domain/rename_list_io.dart';
 import '../domain/rename_rule.dart';
 import 'flick_app.dart';
@@ -48,6 +49,8 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     debugLabel: 'Flick preview list',
   );
   final ScrollController _previewScrollController = ScrollController();
+  final TextEditingController _previewSearchController =
+      TextEditingController();
   List<RenameRule> _rules = [RenameRule.create(RenameRuleType.newName)];
   Timer? _previewTimer;
   Object? _error;
@@ -62,6 +65,10 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   var _previewGeneration = 0;
   String? _activePath;
   int? _selectionAnchorIndex;
+  String _previewQuery = '';
+  PreviewSortField _previewSortField = PreviewSortField.addedOrder;
+  var _previewSortAscending = true;
+  List<int>? _visiblePreviewIndicesCache;
 
   @override
   void initState() {
@@ -296,6 +303,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     }
     setState(() {
       _paths = List.unmodifiable(combined);
+      _visiblePreviewIndicesCache = null;
       _notice = notice;
       _error = null;
     });
@@ -305,6 +313,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   void _removePath(String path) {
     setState(() {
       _paths = _paths.where((candidate) => candidate != path).toList();
+      _visiblePreviewIndicesCache = null;
       _excludedPaths.remove(path);
       _nameOverrides.remove(path);
       _selectedPaths.remove(path);
@@ -320,6 +329,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     _previewTimer?.cancel();
     setState(() {
       _paths = const [];
+      _visiblePreviewIndicesCache = null;
       _excludedPaths.clear();
       _nameOverrides.clear();
       _selectedPaths.clear();
@@ -355,7 +365,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   }
 
   void _setAllPathsIncluded(bool included) {
-    _setPathsIncluded(_paths, included);
+    _setPathsIncluded(_visiblePreviewPaths, included);
   }
 
   void _setSelectedPathsIncluded(bool included) {
@@ -364,7 +374,8 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   }
 
   void _selectPath(String path) {
-    final index = _paths.indexOf(path);
+    final visiblePaths = _visiblePreviewPaths;
+    final index = visiblePaths.indexOf(path);
     if (index < 0) return;
     final keyboard = HardwareKeyboard.instance;
     final extend = keyboard.isShiftPressed;
@@ -374,7 +385,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
       if (extend && anchor != null) {
         final start = math.min(anchor, index);
         final end = math.max(anchor, index);
-        final range = _paths.sublist(start, end + 1);
+        final range = visiblePaths.sublist(start, end + 1);
         if (!toggle) _selectedPaths.clear();
         _selectedPaths.addAll(range);
       } else if (toggle) {
@@ -401,13 +412,89 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   }
 
   void _selectAllPreviewPaths() {
-    if (_paths.isEmpty) return;
+    final visiblePaths = _visiblePreviewPaths;
+    if (visiblePaths.isEmpty) return;
     setState(() {
       _selectedPaths
         ..clear()
-        ..addAll(_paths);
-      _activePath = _paths.first;
+        ..addAll(visiblePaths);
+      _activePath = visiblePaths.first;
       _selectionAnchorIndex = 0;
+    });
+  }
+
+  List<PreviewListRecord> get _previewRecords {
+    final plan = _plan;
+    final hasCurrentPlan =
+        plan != null &&
+        listEquals(plan.sourcePaths, _paths) &&
+        plan.originalNames.length == _paths.length &&
+        plan.proposedNames.length == _paths.length &&
+        plan.sizes.length == _paths.length &&
+        plan.modifiedAt.length == _paths.length;
+    return List.generate(_paths.length, (index) {
+      final fallback = _fileNameFromPath(_paths[index]);
+      return PreviewListRecord(
+        sourceIndex: index,
+        path: _paths[index],
+        originalName: hasCurrentPlan ? plan.originalNames[index] : fallback,
+        proposedName: hasCurrentPlan ? plan.proposedNames[index] : fallback,
+        size: hasCurrentPlan ? plan.sizes[index] : 0,
+        modifiedAt: hasCurrentPlan ? plan.modifiedAt[index] : 0,
+      );
+    }, growable: false);
+  }
+
+  List<int> get _visiblePreviewIndices {
+    return _visiblePreviewIndicesCache ??= visiblePreviewIndices(
+      records: _previewRecords,
+      query: _previewQuery,
+      sortField: _previewSortField,
+      ascending: _previewSortAscending,
+    );
+  }
+
+  List<String> get _visiblePreviewPaths => _visiblePreviewIndices
+      .map((index) => _paths[index])
+      .toList(growable: false);
+
+  void _setPreviewQuery(String query) {
+    final indices = visiblePreviewIndices(
+      records: _previewRecords,
+      query: query,
+      sortField: _previewSortField,
+      ascending: _previewSortAscending,
+    );
+    final visible = indices.map((index) => _paths[index]).toSet();
+    setState(() {
+      _previewQuery = query;
+      _visiblePreviewIndicesCache = indices;
+      _selectedPaths.removeWhere((path) => !visible.contains(path));
+      if (_activePath != null && !visible.contains(_activePath)) {
+        _activePath = null;
+      }
+      _selectionAnchorIndex = null;
+    });
+  }
+
+  void _clearPreviewQuery() {
+    _previewSearchController.clear();
+    _setPreviewQuery('');
+  }
+
+  void _setPreviewSortField(PreviewSortField field) {
+    setState(() {
+      _previewSortField = field;
+      _visiblePreviewIndicesCache = null;
+      _selectionAnchorIndex = null;
+    });
+  }
+
+  void _togglePreviewSortDirection() {
+    setState(() {
+      _previewSortAscending = !_previewSortAscending;
+      _visiblePreviewIndicesCache = null;
+      _selectionAnchorIndex = null;
     });
   }
 
@@ -451,13 +538,14 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   }
 
   void _movePreviewSelection(int delta, {required bool extend}) {
-    if (_paths.isEmpty) return;
+    final visiblePaths = _visiblePreviewPaths;
+    if (visiblePaths.isEmpty) return;
     final currentIndex = _activePath == null
         ? -1
-        : _paths.indexOf(_activePath!);
+        : visiblePaths.indexOf(_activePath!);
     final nextIndex = currentIndex < 0
-        ? (delta > 0 ? 0 : _paths.length - 1)
-        : math.max(0, math.min(currentIndex + delta, _paths.length - 1));
+        ? (delta > 0 ? 0 : visiblePaths.length - 1)
+        : math.max(0, math.min(currentIndex + delta, visiblePaths.length - 1));
     setState(() {
       if (extend) {
         final anchor =
@@ -468,14 +556,14 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
         final end = math.max(anchor, nextIndex);
         _selectedPaths
           ..clear()
-          ..addAll(_paths.sublist(start, end + 1));
+          ..addAll(visiblePaths.sublist(start, end + 1));
       } else {
         _selectedPaths
           ..clear()
-          ..add(_paths[nextIndex]);
+          ..add(visiblePaths[nextIndex]);
         _selectionAnchorIndex = nextIndex;
       }
-      _activePath = _paths[nextIndex];
+      _activePath = visiblePaths[nextIndex];
     });
     _ensurePreviewIndexVisible(nextIndex);
   }
@@ -577,6 +665,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
       if (mounted) {
         setState(() {
           _plan = null;
+          _visiblePreviewIndicesCache = null;
           _previewing = false;
           _previewPending = false;
         });
@@ -631,12 +720,20 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
       if (!mounted || generation != _previewGeneration) return;
       setState(() {
         _plan = plan;
+        _visiblePreviewIndicesCache = null;
         _previewFailed = false;
+        final visible = _visiblePreviewPaths.toSet();
+        _selectedPaths.removeWhere((path) => !visible.contains(path));
+        if (_activePath != null && !visible.contains(_activePath)) {
+          _activePath = null;
+          _selectionAnchorIndex = null;
+        }
       });
     } on Object catch (error) {
       if (!mounted || generation != _previewGeneration) return;
       setState(() {
         _plan = null;
+        _visiblePreviewIndicesCache = null;
         _previewFailed = true;
         _error = error;
       });
@@ -699,6 +796,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
         _history = history;
         _notice = '已安全重新命名 ${result.changedCount} 個檔案';
         _paths = const [];
+        _visiblePreviewIndicesCache = null;
         _excludedPaths.clear();
         _nameOverrides.clear();
         _selectedPaths.clear();
@@ -735,6 +833,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
         _history = refreshed;
         _notice = '已復原 ${result.changedCount} 個檔案';
         _paths = const [];
+        _visiblePreviewIndicesCache = null;
         _excludedPaths.clear();
         _nameOverrides.clear();
         _selectedPaths.clear();
@@ -755,6 +854,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     _previewTimer?.cancel();
     _previewFocusNode.dispose();
     _previewScrollController.dispose();
+    _previewSearchController.dispose();
     if (_backend case final backend?) unawaited(backend.close());
     super.dispose();
   }
@@ -818,6 +918,11 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                     final preview = _PreviewPanel(
                       paths: _paths,
                       plan: _plan,
+                      visibleIndices: _visiblePreviewIndices,
+                      searchController: _previewSearchController,
+                      searchQuery: _previewQuery,
+                      sortField: _previewSortField,
+                      sortAscending: _previewSortAscending,
                       excludedPaths: _excludedPaths,
                       overridePaths: _nameOverrides.keys.toSet(),
                       selectedPaths: _selectedPaths,
@@ -837,6 +942,10 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                       onSetSelectedPathsIncluded: _setSelectedPathsIncluded,
                       onSelectPath: _selectPath,
                       onClearSelection: _clearPreviewSelection,
+                      onSearchChanged: _setPreviewQuery,
+                      onClearSearch: _clearPreviewQuery,
+                      onSortFieldChanged: _setPreviewSortField,
+                      onToggleSortDirection: _togglePreviewSortDirection,
                       onEditProposedName: _editProposedName,
                       onClearPaths: _clearPaths,
                       onApply: _apply,
@@ -2024,6 +2133,11 @@ class _PreviewPanel extends StatelessWidget {
   const _PreviewPanel({
     required this.paths,
     required this.plan,
+    required this.visibleIndices,
+    required this.searchController,
+    required this.searchQuery,
+    required this.sortField,
+    required this.sortAscending,
     required this.excludedPaths,
     required this.overridePaths,
     required this.selectedPaths,
@@ -2043,6 +2157,10 @@ class _PreviewPanel extends StatelessWidget {
     required this.onSetSelectedPathsIncluded,
     required this.onSelectPath,
     required this.onClearSelection,
+    required this.onSearchChanged,
+    required this.onClearSearch,
+    required this.onSortFieldChanged,
+    required this.onToggleSortDirection,
     required this.onEditProposedName,
     required this.onClearPaths,
     required this.onApply,
@@ -2056,6 +2174,11 @@ class _PreviewPanel extends StatelessWidget {
 
   final List<String> paths;
   final RenamePlan? plan;
+  final List<int> visibleIndices;
+  final TextEditingController searchController;
+  final String searchQuery;
+  final PreviewSortField sortField;
+  final bool sortAscending;
   final Set<String> excludedPaths;
   final Set<String> overridePaths;
   final Set<String> selectedPaths;
@@ -2075,6 +2198,10 @@ class _PreviewPanel extends StatelessWidget {
   final ValueChanged<bool> onSetSelectedPathsIncluded;
   final ValueChanged<String> onSelectPath;
   final VoidCallback onClearSelection;
+  final ValueChanged<String> onSearchChanged;
+  final VoidCallback onClearSearch;
+  final ValueChanged<PreviewSortField> onSortFieldChanged;
+  final VoidCallback onToggleSortDirection;
   final Future<void> Function(String path, String proposedName)
   onEditProposedName;
   final VoidCallback onClearPaths;
@@ -2110,10 +2237,17 @@ class _PreviewPanel extends StatelessWidget {
         !previewPending &&
         !scanning &&
         !applying;
-    final includedCount = paths
+    final displayedIndices = visibleIndices
+        .where((index) => index >= 0 && index < rowCount)
+        .toList(growable: false);
+    final displayedPaths = displayedIndices
+        .map((index) => paths[index])
+        .toList(growable: false);
+    final includedCount = displayedPaths
         .where((path) => !excludedPaths.contains(path))
         .length;
-    final includeAllValue = includedCount == paths.length
+    final includeAllValue =
+        displayedPaths.isNotEmpty && includedCount == displayedPaths.length
         ? true
         : includedCount == 0
         ? false
@@ -2182,6 +2316,20 @@ class _PreviewPanel extends StatelessWidget {
                     ? const LinearProgressIndicator(minHeight: 2)
                     : const ColoredBox(color: Colors.transparent),
               ),
+              if (paths.isNotEmpty)
+                _PreviewTools(
+                  controller: searchController,
+                  query: searchQuery,
+                  sortField: sortField,
+                  ascending: sortAscending,
+                  visibleCount: displayedIndices.length,
+                  totalCount: rowCount,
+                  enabled: !applying && !scanning,
+                  onSearchChanged: onSearchChanged,
+                  onClearSearch: onClearSearch,
+                  onSortFieldChanged: onSortFieldChanged,
+                  onToggleSortDirection: onToggleSortDirection,
+                ),
               Expanded(
                 child: paths.isEmpty
                     ? _DropEmptyState(
@@ -2195,71 +2343,89 @@ class _PreviewPanel extends StatelessWidget {
                         children: [
                           _PreviewColumns(
                             includeAllValue: includeAllValue,
-                            enabled: !applying && !scanning,
+                            filtered: displayedIndices.length != rowCount,
+                            enabled:
+                                displayedIndices.isNotEmpty &&
+                                !applying &&
+                                !scanning,
                             onChanged: onSetAllPathsIncluded,
                           ),
                           Expanded(
-                            child: ListView.builder(
-                              key: const ValueKey('preview-list'),
-                              controller: scrollController,
-                              itemExtent: _previewRowExtent,
-                              itemCount: rowCount,
-                              itemBuilder: (context, index) {
-                                final inputPath = paths[index];
-                                final sourcePath = currentPlan == null
-                                    ? inputPath
-                                    : currentPlan.sourcePaths[index];
-                                return Column(
-                                  children: [
-                                    Expanded(
-                                      child: _PreviewRow(
-                                        key: ValueKey('preview-row-$inputPath'),
-                                        sourcePath: sourcePath,
-                                        originalName:
-                                            currentPlan?.originalNames[index],
-                                        proposedName:
-                                            currentPlan?.proposedNames[index],
-                                        status: currentPlan?.statuses[index],
-                                        message: currentPlan?.messages[index],
-                                        included: !excludedPaths.contains(
-                                          inputPath,
-                                        ),
-                                        overridden: overridePaths.contains(
-                                          inputPath,
-                                        ),
-                                        selected: selectedPaths.contains(
-                                          inputPath,
-                                        ),
-                                        active: activePath == inputPath,
-                                        previewFailed: previewFailed,
-                                        onSelect: () => onSelectPath(inputPath),
-                                        onIncludedChanged: applying || scanning
-                                            ? null
-                                            : (included) => onSetPathIncluded(
-                                                inputPath,
-                                                included,
+                            child: displayedIndices.isEmpty
+                                ? _EmptyPreviewFilter(
+                                    query: searchQuery,
+                                    onClear: onClearSearch,
+                                  )
+                                : ListView.builder(
+                                    key: const ValueKey('preview-list'),
+                                    controller: scrollController,
+                                    itemExtent: _previewRowExtent,
+                                    itemCount: displayedIndices.length,
+                                    itemBuilder: (context, rowIndex) {
+                                      final index = displayedIndices[rowIndex];
+                                      final inputPath = paths[index];
+                                      final sourcePath = currentPlan == null
+                                          ? inputPath
+                                          : currentPlan.sourcePaths[index];
+                                      return Column(
+                                        children: [
+                                          Expanded(
+                                            child: _PreviewRow(
+                                              key: ValueKey(
+                                                'preview-row-$inputPath',
                                               ),
-                                        onEditName:
-                                            applying ||
-                                                scanning ||
-                                                currentPlan == null
-                                            ? null
-                                            : () => onEditProposedName(
+                                              sourcePath: sourcePath,
+                                              originalName: currentPlan
+                                                  ?.originalNames[index],
+                                              proposedName: currentPlan
+                                                  ?.proposedNames[index],
+                                              status:
+                                                  currentPlan?.statuses[index],
+                                              message:
+                                                  currentPlan?.messages[index],
+                                              included: !excludedPaths.contains(
                                                 inputPath,
-                                                currentPlan
-                                                    .proposedNames[index],
                                               ),
-                                        onRemove: applying || scanning
-                                            ? null
-                                            : () => onRemovePath(inputPath),
-                                      ),
-                                    ),
-                                    if (index + 1 < rowCount)
-                                      const Divider(height: 1),
-                                  ],
-                                );
-                              },
-                            ),
+                                              overridden: overridePaths
+                                                  .contains(inputPath),
+                                              selected: selectedPaths.contains(
+                                                inputPath,
+                                              ),
+                                              active: activePath == inputPath,
+                                              previewFailed: previewFailed,
+                                              onSelect: () =>
+                                                  onSelectPath(inputPath),
+                                              onIncludedChanged:
+                                                  applying || scanning
+                                                  ? null
+                                                  : (included) =>
+                                                        onSetPathIncluded(
+                                                          inputPath,
+                                                          included,
+                                                        ),
+                                              onEditName:
+                                                  applying ||
+                                                      scanning ||
+                                                      currentPlan == null
+                                                  ? null
+                                                  : () => onEditProposedName(
+                                                      inputPath,
+                                                      currentPlan
+                                                          .proposedNames[index],
+                                                    ),
+                                              onRemove: applying || scanning
+                                                  ? null
+                                                  : () =>
+                                                        onRemovePath(inputPath),
+                                            ),
+                                          ),
+                                          if (rowIndex + 1 <
+                                              displayedIndices.length)
+                                            const Divider(height: 1),
+                                        ],
+                                      );
+                                    },
+                                  ),
                           ),
                         ],
                       ),
@@ -2278,6 +2444,154 @@ class _PreviewPanel extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _PreviewTools extends StatelessWidget {
+  const _PreviewTools({
+    required this.controller,
+    required this.query,
+    required this.sortField,
+    required this.ascending,
+    required this.visibleCount,
+    required this.totalCount,
+    required this.enabled,
+    required this.onSearchChanged,
+    required this.onClearSearch,
+    required this.onSortFieldChanged,
+    required this.onToggleSortDirection,
+  });
+
+  final TextEditingController controller;
+  final String query;
+  final PreviewSortField sortField;
+  final bool ascending;
+  final int visibleCount;
+  final int totalCount;
+  final bool enabled;
+  final ValueChanged<String> onSearchChanged;
+  final VoidCallback onClearSearch;
+  final ValueChanged<PreviewSortField> onSortFieldChanged;
+  final VoidCallback onToggleSortDirection;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(minHeight: 54),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+      decoration: const BoxDecoration(
+        color: surface,
+        border: Border(bottom: BorderSide(color: border)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              key: const ValueKey('preview-search'),
+              controller: controller,
+              enabled: enabled,
+              onChanged: onSearchChanged,
+              decoration: InputDecoration(
+                hintText: '搜尋檔名或路徑',
+                prefixIcon: const Icon(Icons.search_rounded, size: 18),
+                suffixIcon: query.isEmpty
+                    ? null
+                    : IconButton(
+                        onPressed: onClearSearch,
+                        tooltip: '清除搜尋',
+                        icon: const Icon(Icons.close_rounded, size: 17),
+                      ),
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(vertical: 9),
+              ),
+            ),
+          ),
+          const SizedBox(width: 9),
+          Tooltip(
+            message: '排序只改變顯示順序，不影響流水號或名稱清單對應',
+            child: Container(
+              width: 150,
+              height: 38,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0E1117),
+                borderRadius: BorderRadius.circular(9),
+                border: Border.all(color: border),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<PreviewSortField>(
+                  key: const ValueKey('preview-sort-field'),
+                  value: sortField,
+                  isExpanded: true,
+                  icon: const Icon(Icons.expand_more_rounded, size: 18),
+                  items: PreviewSortField.values
+                      .map(
+                        (field) => DropdownMenuItem(
+                          value: field,
+                          child: Text(
+                            field.label,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                        ),
+                      )
+                      .toList(growable: false),
+                  onChanged: enabled
+                      ? (field) {
+                          if (field != null) onSortFieldChanged(field);
+                        }
+                      : null,
+                ),
+              ),
+            ),
+          ),
+          IconButton(
+            onPressed: enabled ? onToggleSortDirection : null,
+            tooltip: ascending ? '改為降冪排序' : '改為升冪排序',
+            icon: Icon(
+              ascending
+                  ? Icons.arrow_upward_rounded
+                  : Icons.arrow_downward_rounded,
+              size: 18,
+            ),
+          ),
+          SizedBox(
+            width: 72,
+            child: Text(
+              '$visibleCount / $totalCount',
+              textAlign: TextAlign.right,
+              style: const TextStyle(color: subtle, fontSize: 11),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyPreviewFilter extends StatelessWidget {
+  const _EmptyPreviewFilter({required this.query, required this.onClear});
+
+  final String query;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.search_off_rounded, color: subtle, size: 34),
+          const SizedBox(height: 10),
+          Text(
+            '找不到符合「$query」的檔案',
+            style: const TextStyle(color: muted, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 8),
+          TextButton(onPressed: onClear, child: const Text('清除搜尋')),
+        ],
       ),
     );
   }
@@ -2431,11 +2745,13 @@ class _DropEmptyState extends StatelessWidget {
 class _PreviewColumns extends StatelessWidget {
   const _PreviewColumns({
     required this.includeAllValue,
+    required this.filtered,
     required this.enabled,
     required this.onChanged,
   });
 
   final bool? includeAllValue;
+  final bool filtered;
   final bool enabled;
   final ValueChanged<bool> onChanged;
 
@@ -2450,11 +2766,20 @@ class _PreviewColumns extends StatelessWidget {
           SizedBox(
             width: 40,
             child: Tooltip(
-              message: includeAllValue == true ? '排除全部檔案' : '納入全部檔案',
+              message: includeAllValue == true
+                  ? filtered
+                        ? '排除顯示中的檔案'
+                        : '排除全部檔案'
+                  : filtered
+                  ? '納入顯示中的檔案'
+                  : '納入全部檔案',
               child: Checkbox(
+                key: const ValueKey('preview-include-visible'),
                 tristate: true,
                 value: includeAllValue,
-                onChanged: enabled ? (value) => onChanged(value ?? true) : null,
+                onChanged: enabled
+                    ? (_) => onChanged(includeAllValue != true)
+                    : null,
               ),
             ),
           ),

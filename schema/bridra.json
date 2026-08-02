@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "protocolVersion": 2,
+  "protocolVersion": 3,
   "methods": [
     {
       "name": "system.health",
@@ -66,6 +66,8 @@
           {"name": "messages", "type": "string", "array": true},
           {"name": "included", "type": "boolean", "array": true},
           {"name": "overridden", "type": "boolean", "array": true},
+          {"name": "sizes", "type": "integer", "array": true},
+          {"name": "modifiedAt", "type": "integer", "array": true},
           {"name": "renameableCount", "type": "integer"},
           {"name": "unchangedCount", "type": "integer"},
           {"name": "errorCount", "type": "integer"},

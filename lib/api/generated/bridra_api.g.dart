@@ -2,7 +2,7 @@
 
 import 'package:bridra_flutter/bridra_flutter.dart';
 
-const supportedBackendProtocolVersion = 2;
+const supportedBackendProtocolVersion = 3;
 
 abstract final class BridraMethods {
   static const systemHealth = 'system.health';
@@ -92,6 +92,8 @@ class RenamePlan {
     required this.messages,
     required this.included,
     required this.overridden,
+    required this.sizes,
+    required this.modifiedAt,
     required this.renameableCount,
     required this.unchangedCount,
     required this.errorCount,
@@ -107,6 +109,8 @@ class RenamePlan {
   final List<String> messages;
   final List<bool> included;
   final List<bool> overridden;
+  final List<int> sizes;
+  final List<int> modifiedAt;
   final int renameableCount;
   final int unchangedCount;
   final int errorCount;
@@ -266,6 +270,8 @@ class BridraRpcApi implements BridraApi {
         messages: _requireListField<String>(result, 'messages'),
         included: _requireListField<bool>(result, 'included'),
         overridden: _requireListField<bool>(result, 'overridden'),
+        sizes: _requireListField<int>(result, 'sizes'),
+        modifiedAt: _requireListField<int>(result, 'modifiedAt'),
         renameableCount: _requireField<int>(result, 'renameableCount'),
         unchangedCount: _requireField<int>(result, 'unchangedCount'),
         errorCount: _requireField<int>(result, 'errorCount'),

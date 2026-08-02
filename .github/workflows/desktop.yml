@@ -92,7 +92,7 @@ jobs:
             build/linux/x64/release/bundle/libexec/bridra_backend --token smoke-token)"
           echo "$response"
           echo "$response" | grep -q '"status":"ok"'
-          echo "$response" | grep -q '"protocolVersion":2'
+          echo "$response" | grep -q '"protocolVersion":3'
 
       - name: Smoke-test macOS bundle
         if: matrix.target == 'macos'
@@ -102,7 +102,7 @@ jobs:
             build/macos/Build/Products/Release/flick.app/Contents/MacOS/libexec/bridra_backend --token smoke-token)"
           echo "$response"
           echo "$response" | grep -q '"status":"ok"'
-          echo "$response" | grep -q '"protocolVersion":2'
+          echo "$response" | grep -q '"protocolVersion":3'
 
       - name: Smoke-test Windows bundle
         if: matrix.target == 'windows'
@@ -114,7 +114,7 @@ jobs:
             throw "Bundled Go sidecar failed with exit code $LASTEXITCODE"
           }
           $message = $response | ConvertFrom-Json
-          if ($message.result.status -ne "ok" -or $message.result.protocolVersion -ne 2) {
+          if ($message.result.status -ne "ok" -or $message.result.protocolVersion -ne 3) {
             throw "Bundled Go sidecar returned an invalid health response"
           }
           $response

@@ -32,7 +32,7 @@ class FakeBackend implements BackendGateway {
     return const HealthInfo(
       status: 'ok',
       frameworkVersion: '0.9.0',
-      protocolVersion: 2,
+      protocolVersion: 3,
       runtime: 'Go sidecar',
       architecture: 'Middleware -> Controller -> Service',
     );
@@ -88,6 +88,16 @@ class FakeBackend implements BackendGateway {
       overridden: request.paths
           .map(overrides.containsKey)
           .toList(growable: false),
+      sizes: List.generate(
+        request.paths.length,
+        (index) => (request.paths.length - index) * 10,
+        growable: false,
+      ),
+      modifiedAt: List.generate(
+        request.paths.length,
+        (index) => (index + 1) * 100,
+        growable: false,
+      ),
       renameableCount: included.where((value) => value).length,
       unchangedCount: 0,
       errorCount: 0,
@@ -164,7 +174,7 @@ void main() {
     expect(find.text('v0.1.0 (1)'), findsOneWidget);
     expect(find.text('本機引擎就緒'), findsOneWidget);
     expect(
-      find.byTooltip('Go sidecar · Bridra 0.9.0 · Protocol 2'),
+      find.byTooltip('Go sidecar · Bridra 0.9.0 · Protocol 3'),
       findsOneWidget,
     );
     expect(find.text('改名規則'), findsOneWidget);
@@ -254,6 +264,72 @@ void main() {
     await tester.pump();
     expect(find.text('1 / 2 個名稱'), findsOneWidget);
     expect(find.text('名稱數量必須與檔案數量完全一致'), findsOneWidget);
+  });
+
+  testWidgets('filters and visually sorts the preview list', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(1280, 820);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final directory = Directory.systemTemp.createTempSync('flick-widget-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final files = ['charlie.txt', 'alpha.jpg', 'bravo.png']
+        .map((name) => File('${directory.path}/$name')..writeAsStringSync(name))
+        .toList(growable: false);
+    final backend = FakeBackend();
+
+    await tester.pumpWidget(FlickApp(connector: () async => backend));
+    await tester.pumpAndSettle();
+    await _dropFiles(
+      tester,
+      files.map((file) => file.path).toList(growable: false),
+      backend,
+    );
+    await _pumpAsyncWork(tester);
+
+    expect(find.text('3 / 3'), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const ValueKey('preview-search')),
+      'alpha',
+    );
+    await tester.pump();
+    expect(find.text('1 / 3'), findsOneWidget);
+    expect(find.text('alpha.jpg'), findsOneWidget);
+    expect(find.text('charlie.txt'), findsNothing);
+    expect(find.byTooltip('排除顯示中的檔案'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('preview-include-visible')));
+    await tester.pump();
+    expect(find.byTooltip('納入顯示中的檔案'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 250));
+    await _pumpAsyncWork(tester);
+    expect(backend.lastPreviewRequest?.excludedPaths, [files[1].path]);
+
+    await tester.tap(find.byTooltip('清除搜尋'));
+    await tester.pump();
+    final requestsBeforeSort = backend.previewRequests.length;
+    await tester.tap(find.byKey(const ValueKey('preview-sort-field')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('檔案大小').last);
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.getTopLeft(find.text('bravo.png')).dy,
+      lessThan(tester.getTopLeft(find.text('alpha.jpg')).dy),
+    );
+    expect(
+      tester.getTopLeft(find.text('alpha.jpg')).dy,
+      lessThan(tester.getTopLeft(find.text('charlie.txt')).dy),
+    );
+    expect(backend.previewRequests.length, requestsBeforeSort);
+
+    await tester.tap(find.byTooltip('改為降冪排序'));
+    await tester.pump();
+    expect(
+      tester.getTopLeft(find.text('charlie.txt')).dy,
+      lessThan(tester.getTopLeft(find.text('bravo.png')).dy),
+    );
   });
 
   testWidgets('expands per-rule condition controls', (tester) async {
