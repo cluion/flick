@@ -6,6 +6,7 @@ import 'package:flick/api/backend_gateway.dart';
 import 'package:flick/app/flick_app.dart';
 import 'package:flutter/material.dart'
     show FilledButton, Icons, Offset, Size, ValueKey;
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -330,6 +331,114 @@ void main() {
     expect(tester.getTopLeft(find.text('原始檔名')).dy, columnsY);
     expect(tester.getSize(progressSlot).height, 2);
   });
+
+  testWidgets('selects a range and changes inclusion in bulk', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(1280, 820);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final directory = Directory.systemTemp.createTempSync('flick-widget-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final files = ['one.txt', 'two.txt', 'three.txt']
+        .map((name) => File('${directory.path}/$name')..writeAsStringSync(name))
+        .toList(growable: false);
+    final backend = FakeBackend();
+
+    await tester.pumpWidget(FlickApp(connector: () async => backend));
+    await tester.pumpAndSettle();
+    await _dropFiles(
+      tester,
+      files.map((file) => file.path).toList(growable: false),
+      backend,
+    );
+    await _pumpAsyncWork(tester);
+
+    await tester.tap(find.text('one.txt'));
+    await tester.pump();
+    expect(find.text('1 個已選'), findsOneWidget);
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.tap(find.text('three.txt'));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.pump();
+    expect(find.text('3 個已選'), findsOneWidget);
+
+    await tester.tap(find.text('排除'));
+    await _pumpAsyncWork(tester);
+    expect(
+      backend.lastPreviewRequest?.excludedPaths,
+      files.map((file) => file.path).toList(growable: false),
+    );
+    expect(find.byTooltip('納入全部檔案'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('納入全部檔案'));
+    await _pumpAsyncWork(tester);
+    expect(backend.lastPreviewRequest?.excludedPaths, isEmpty);
+
+    await tester.tap(find.text('取消選取'));
+    await tester.pump();
+    expect(find.text('3 個已選'), findsNothing);
+  });
+
+  testWidgets('supports preview keyboard navigation and editing', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(1280, 820);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final directory = Directory.systemTemp.createTempSync('flick-widget-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final files = ['one.txt', 'two.txt', 'three.txt']
+        .map((name) => File('${directory.path}/$name')..writeAsStringSync(name))
+        .toList(growable: false);
+    final backend = FakeBackend();
+
+    await tester.pumpWidget(FlickApp(connector: () async => backend));
+    await tester.pumpAndSettle();
+    await _dropFiles(
+      tester,
+      files.map((file) => file.path).toList(growable: false),
+      backend,
+    );
+    await _pumpAsyncWork(tester);
+
+    await tester.tap(find.text('one.txt'));
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.sendKeyEvent(LogicalKeyboardKey.space);
+    await _pumpAsyncWork(tester);
+    expect(backend.lastPreviewRequest?.excludedPaths, [files[1].path]);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.f2);
+    await tester.pumpAndSettle();
+    expect(find.text('修改這個檔名'), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const ValueKey('manual-name-field')),
+      'keyboard-name.txt',
+    );
+    await tester.tap(find.text('套用到預覽'));
+    await _pumpAsyncWork(tester);
+    expect(backend.lastPreviewRequest?.overridePaths, [files[1].path]);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(find.text('修改這個檔名'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyA);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump();
+    expect(find.text('3 個已選'), findsOneWidget);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(find.text('3 個已選'), findsNothing);
+  });
 }
 
 Future<void> _pumpAsyncWork(WidgetTester tester) async {
@@ -338,16 +447,20 @@ Future<void> _pumpAsyncWork(WidgetTester tester) async {
   }
 }
 
-Future<void> _dropFile(
+Future<void> _dropFile(WidgetTester tester, String path, FakeBackend backend) {
+  return _dropFiles(tester, [path], backend);
+}
+
+Future<void> _dropFiles(
   WidgetTester tester,
-  String path,
+  List<String> paths,
   FakeBackend backend,
 ) async {
   final target = tester.widget<DropTarget>(find.byType(DropTarget));
   await tester.runAsync(() async {
     target.onDragDone!(
       DropDoneDetails(
-        files: [DropItemFile(path)],
+        files: paths.map(DropItemFile.new).toList(growable: false),
         localPosition: Offset.zero,
         globalPosition: Offset.zero,
       ),

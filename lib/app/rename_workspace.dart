@@ -6,6 +6,7 @@ import 'package:bridra_flutter/bridra_flutter.dart' show RpcException;
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/backend_gateway.dart';
@@ -15,6 +16,7 @@ import 'flick_app.dart';
 
 const _savedRulesKey = 'flick.rename-rules.v2';
 const _maxRenameItems = 10000;
+const _previewRowExtent = 65.0;
 
 class RenameWorkspace extends StatefulWidget {
   const RenameWorkspace({
@@ -39,6 +41,11 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   List<String> _paths = const [];
   final Set<String> _excludedPaths = {};
   final Map<String, String> _nameOverrides = {};
+  final Set<String> _selectedPaths = {};
+  final FocusNode _previewFocusNode = FocusNode(
+    debugLabel: 'Flick preview list',
+  );
+  final ScrollController _previewScrollController = ScrollController();
   List<RenameRule> _rules = [RenameRule.create(RenameRuleType.newName)];
   Timer? _previewTimer;
   Object? _error;
@@ -51,6 +58,8 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   var _applying = false;
   var _dragging = false;
   var _previewGeneration = 0;
+  String? _activePath;
+  int? _selectionAnchorIndex;
 
   @override
   void initState() {
@@ -232,6 +241,9 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
       _paths = _paths.where((candidate) => candidate != path).toList();
       _excludedPaths.remove(path);
       _nameOverrides.remove(path);
+      _selectedPaths.remove(path);
+      if (_activePath == path) _activePath = null;
+      _selectionAnchorIndex = null;
       _plan = null;
     });
     _schedulePreview(immediate: true);
@@ -244,6 +256,9 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
       _paths = const [];
       _excludedPaths.clear();
       _nameOverrides.clear();
+      _selectedPaths.clear();
+      _activePath = null;
+      _selectionAnchorIndex = null;
       _plan = null;
       _error = null;
       _previewing = false;
@@ -253,15 +268,180 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   }
 
   void _setPathIncluded(String path, bool included) {
+    _setPathsIncluded([path], included);
+  }
+
+  void _setPathsIncluded(Iterable<String> paths, bool included) {
+    if (_applying || _scanning) return;
+    final currentPaths = _paths.toSet();
     setState(() {
-      if (included) {
-        _excludedPaths.remove(path);
-      } else {
-        _excludedPaths.add(path);
+      for (final path in paths) {
+        if (!currentPaths.contains(path)) continue;
+        if (included) {
+          _excludedPaths.remove(path);
+        } else {
+          _excludedPaths.add(path);
+        }
       }
       _notice = null;
     });
     _schedulePreview();
+  }
+
+  void _setAllPathsIncluded(bool included) {
+    _setPathsIncluded(_paths, included);
+  }
+
+  void _setSelectedPathsIncluded(bool included) {
+    if (_selectedPaths.isEmpty) return;
+    _setPathsIncluded(_selectedPaths, included);
+  }
+
+  void _selectPath(String path) {
+    final index = _paths.indexOf(path);
+    if (index < 0) return;
+    final keyboard = HardwareKeyboard.instance;
+    final extend = keyboard.isShiftPressed;
+    final toggle = keyboard.isMetaPressed || keyboard.isControlPressed;
+    final anchor = _selectionAnchorIndex;
+    setState(() {
+      if (extend && anchor != null) {
+        final start = math.min(anchor, index);
+        final end = math.max(anchor, index);
+        final range = _paths.sublist(start, end + 1);
+        if (!toggle) _selectedPaths.clear();
+        _selectedPaths.addAll(range);
+      } else if (toggle) {
+        if (!_selectedPaths.remove(path)) _selectedPaths.add(path);
+        _selectionAnchorIndex = index;
+      } else {
+        _selectedPaths
+          ..clear()
+          ..add(path);
+        _selectionAnchorIndex = index;
+      }
+      _activePath = path;
+    });
+    _previewFocusNode.requestFocus();
+  }
+
+  void _clearPreviewSelection() {
+    if (_selectedPaths.isEmpty && _activePath == null) return;
+    setState(() {
+      _selectedPaths.clear();
+      _activePath = null;
+      _selectionAnchorIndex = null;
+    });
+  }
+
+  void _selectAllPreviewPaths() {
+    if (_paths.isEmpty) return;
+    setState(() {
+      _selectedPaths
+        ..clear()
+        ..addAll(_paths);
+      _activePath = _paths.first;
+      _selectionAnchorIndex = 0;
+    });
+  }
+
+  KeyEventResult _handlePreviewKey(FocusNode _, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final key = event.logicalKey;
+    final keyboard = HardwareKeyboard.instance;
+    if (key == LogicalKeyboardKey.keyA &&
+        (keyboard.isMetaPressed || keyboard.isControlPressed)) {
+      _selectAllPreviewPaths();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.escape) {
+      _clearPreviewSelection();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowUp ||
+        key == LogicalKeyboardKey.arrowDown) {
+      _movePreviewSelection(
+        key == LogicalKeyboardKey.arrowDown ? 1 : -1,
+        extend: keyboard.isShiftPressed,
+      );
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.space) {
+      final targets = _selectedPaths.isEmpty
+          ? [_activePath].whereType<String>()
+          : _selectedPaths;
+      if (targets.isEmpty) return KeyEventResult.ignored;
+      final include = targets.every(_excludedPaths.contains);
+      _setPathsIncluded(targets, include);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.f2 || key == LogicalKeyboardKey.enter) {
+      _editActivePreviewPath();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  void _movePreviewSelection(int delta, {required bool extend}) {
+    if (_paths.isEmpty) return;
+    final currentIndex = _activePath == null
+        ? -1
+        : _paths.indexOf(_activePath!);
+    final nextIndex = currentIndex < 0
+        ? (delta > 0 ? 0 : _paths.length - 1)
+        : math.max(0, math.min(currentIndex + delta, _paths.length - 1));
+    setState(() {
+      if (extend) {
+        final anchor =
+            _selectionAnchorIndex ??
+            (currentIndex < 0 ? nextIndex : currentIndex);
+        _selectionAnchorIndex = anchor;
+        final start = math.min(anchor, nextIndex);
+        final end = math.max(anchor, nextIndex);
+        _selectedPaths
+          ..clear()
+          ..addAll(_paths.sublist(start, end + 1));
+      } else {
+        _selectedPaths
+          ..clear()
+          ..add(_paths[nextIndex]);
+        _selectionAnchorIndex = nextIndex;
+      }
+      _activePath = _paths[nextIndex];
+    });
+    _ensurePreviewIndexVisible(nextIndex);
+  }
+
+  void _ensurePreviewIndexVisible(int index) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_previewScrollController.hasClients) return;
+      final position = _previewScrollController.position;
+      final itemStart = index * _previewRowExtent;
+      final itemEnd = itemStart + _previewRowExtent;
+      var target = position.pixels;
+      if (itemStart < position.pixels) {
+        target = itemStart;
+      } else if (itemEnd > position.pixels + position.viewportDimension) {
+        target = itemEnd - position.viewportDimension;
+      }
+      if (target == position.pixels) return;
+      _previewScrollController.animateTo(
+        target.clamp(position.minScrollExtent, position.maxScrollExtent),
+        duration: const Duration(milliseconds: 120),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
+  void _editActivePreviewPath() {
+    final path = _activePath;
+    final plan = _plan;
+    if (path == null || plan == null || _applying || _scanning) return;
+    final index = _paths.indexOf(path);
+    if (index < 0 || index >= plan.proposedNames.length) return;
+    unawaited(_editProposedName(path, plan.proposedNames[index]));
   }
 
   Future<void> _editProposedName(String path, String proposedName) async {
@@ -272,7 +452,11 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
         hasOverride: _nameOverrides.containsKey(path),
       ),
     );
-    if (result == null || !mounted) return;
+    if (!mounted) return;
+    if (result == null) {
+      _previewFocusNode.requestFocus();
+      return;
+    }
     setState(() {
       if (result.clear) {
         _nameOverrides.remove(path);
@@ -282,6 +466,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
       _notice = null;
     });
     _schedulePreview(immediate: true);
+    _previewFocusNode.requestFocus();
   }
 
   void _updateRule(int index, RenameRule rule) {
@@ -450,6 +635,9 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
         _paths = const [];
         _excludedPaths.clear();
         _nameOverrides.clear();
+        _selectedPaths.clear();
+        _activePath = null;
+        _selectionAnchorIndex = null;
         _plan = null;
         _previewPending = false;
       });
@@ -483,6 +671,9 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
         _paths = const [];
         _excludedPaths.clear();
         _nameOverrides.clear();
+        _selectedPaths.clear();
+        _activePath = null;
+        _selectionAnchorIndex = null;
         _plan = null;
         _previewPending = false;
       });
@@ -496,6 +687,8 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   @override
   void dispose() {
     _previewTimer?.cancel();
+    _previewFocusNode.dispose();
+    _previewScrollController.dispose();
     if (_backend case final backend?) unawaited(backend.close());
     super.dispose();
   }
@@ -549,6 +742,8 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                       plan: _plan,
                       excludedPaths: _excludedPaths,
                       overridePaths: _nameOverrides.keys.toSet(),
+                      selectedPaths: _selectedPaths,
+                      activePath: _activePath,
                       connected: connected,
                       previewing: _previewing,
                       previewPending: _previewPending,
@@ -560,9 +755,16 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                       onChooseDirectory: _chooseDirectory,
                       onRemovePath: _removePath,
                       onSetPathIncluded: _setPathIncluded,
+                      onSetAllPathsIncluded: _setAllPathsIncluded,
+                      onSetSelectedPathsIncluded: _setSelectedPathsIncluded,
+                      onSelectPath: _selectPath,
+                      onClearSelection: _clearPreviewSelection,
                       onEditProposedName: _editProposedName,
                       onClearPaths: _clearPaths,
                       onApply: _apply,
+                      focusNode: _previewFocusNode,
+                      scrollController: _previewScrollController,
+                      onKeyEvent: _handlePreviewKey,
                       onDragEntered: () => setState(() => _dragging = true),
                       onDragExited: () => setState(() => _dragging = false),
                       onDrop: (files) {
@@ -1560,6 +1762,8 @@ class _PreviewPanel extends StatelessWidget {
     required this.plan,
     required this.excludedPaths,
     required this.overridePaths,
+    required this.selectedPaths,
+    required this.activePath,
     required this.connected,
     required this.previewing,
     required this.previewPending,
@@ -1571,9 +1775,16 @@ class _PreviewPanel extends StatelessWidget {
     required this.onChooseDirectory,
     required this.onRemovePath,
     required this.onSetPathIncluded,
+    required this.onSetAllPathsIncluded,
+    required this.onSetSelectedPathsIncluded,
+    required this.onSelectPath,
+    required this.onClearSelection,
     required this.onEditProposedName,
     required this.onClearPaths,
     required this.onApply,
+    required this.focusNode,
+    required this.scrollController,
+    required this.onKeyEvent,
     required this.onDragEntered,
     required this.onDragExited,
     required this.onDrop,
@@ -1583,6 +1794,8 @@ class _PreviewPanel extends StatelessWidget {
   final RenamePlan? plan;
   final Set<String> excludedPaths;
   final Set<String> overridePaths;
+  final Set<String> selectedPaths;
+  final String? activePath;
   final bool connected;
   final bool previewing;
   final bool previewPending;
@@ -1594,10 +1807,17 @@ class _PreviewPanel extends StatelessWidget {
   final VoidCallback onChooseDirectory;
   final ValueChanged<String> onRemovePath;
   final void Function(String path, bool included) onSetPathIncluded;
+  final ValueChanged<bool> onSetAllPathsIncluded;
+  final ValueChanged<bool> onSetSelectedPathsIncluded;
+  final ValueChanged<String> onSelectPath;
+  final VoidCallback onClearSelection;
   final Future<void> Function(String path, String proposedName)
   onEditProposedName;
   final VoidCallback onClearPaths;
   final VoidCallback onApply;
+  final FocusNode focusNode;
+  final ScrollController scrollController;
+  final FocusOnKeyEventCallback onKeyEvent;
   final VoidCallback onDragEntered;
   final VoidCallback onDragExited;
   final ValueChanged<List<XFile>> onDrop;
@@ -1626,129 +1846,173 @@ class _PreviewPanel extends StatelessWidget {
         !previewPending &&
         !scanning &&
         !applying;
+    final includedCount = paths
+        .where((path) => !excludedPaths.contains(path))
+        .length;
+    final includeAllValue = includedCount == paths.length
+        ? true
+        : includedCount == 0
+        ? false
+        : null;
 
-    return DropTarget(
-      onDragEntered: (_) => onDragEntered(),
-      onDragExited: (_) => onDragExited(),
-      onDragDone: (detail) => onDrop(detail.files),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 160),
-        color: dragging ? primary.withValues(alpha: 0.07) : background,
-        child: Column(
-          children: [
-            Container(
-              height: 64,
-              padding: const EdgeInsets.symmetric(horizontal: 18),
-              decoration: const BoxDecoration(
-                color: surface,
-                border: Border(bottom: BorderSide(color: border)),
-              ),
-              child: Row(
-                children: [
-                  const Expanded(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '檔名預覽',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 17,
-                            fontWeight: FontWeight.w800,
+    return Focus(
+      focusNode: focusNode,
+      onKeyEvent: onKeyEvent,
+      child: DropTarget(
+        onDragEntered: (_) => onDragEntered(),
+        onDragExited: (_) => onDragExited(),
+        onDragDone: (detail) => onDrop(detail.files),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          color: dragging ? primary.withValues(alpha: 0.07) : background,
+          child: Column(
+            children: [
+              Container(
+                height: 64,
+                padding: const EdgeInsets.symmetric(horizontal: 18),
+                decoration: const BoxDecoration(
+                  color: surface,
+                  border: Border(bottom: BorderSide(color: border)),
+                ),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '檔名預覽',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 17,
+                              fontWeight: FontWeight.w800,
+                            ),
                           ),
-                        ),
-                        SizedBox(height: 2),
-                        Text(
-                          '綠色表示可套用，紅色表示需要處理',
-                          style: TextStyle(color: subtle, fontSize: 12),
-                        ),
-                      ],
+                          SizedBox(height: 2),
+                          Text(
+                            '點選列可批次操作；Shift 可範圍選取',
+                            style: TextStyle(color: subtle, fontSize: 12),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                  if (paths.isNotEmpty)
-                    TextButton(
-                      onPressed: applying || scanning ? null : onClearPaths,
-                      child: const Text('全部清除'),
-                    ),
-                  const SizedBox(width: 6),
-                  _AddItemsMenu(
-                    enabled: connected && !applying && !scanning,
-                    onChooseFiles: onChooseFiles,
-                    onChooseDirectory: onChooseDirectory,
-                  ),
-                ],
-              ),
-            ),
-            SizedBox(
-              key: const ValueKey('preview-progress-slot'),
-              height: 2,
-              child: previewing || previewPending || scanning
-                  ? const LinearProgressIndicator(minHeight: 2)
-                  : const ColoredBox(color: Colors.transparent),
-            ),
-            Expanded(
-              child: paths.isEmpty
-                  ? _DropEmptyState(
-                      connected: connected,
-                      scanning: scanning,
-                      dragging: dragging,
+                    if (paths.isNotEmpty)
+                      TextButton(
+                        onPressed: applying || scanning ? null : onClearPaths,
+                        child: const Text('全部清除'),
+                      ),
+                    const SizedBox(width: 6),
+                    _AddItemsMenu(
+                      enabled: connected && !applying && !scanning,
                       onChooseFiles: onChooseFiles,
                       onChooseDirectory: onChooseDirectory,
-                    )
-                  : Column(
-                      children: [
-                        const _PreviewColumns(),
-                        Expanded(
-                          child: ListView.separated(
-                            itemCount: rowCount,
-                            separatorBuilder: (_, _) =>
-                                const Divider(height: 1),
-                            itemBuilder: (context, index) {
-                              final inputPath = paths[index];
-                              final sourcePath = currentPlan == null
-                                  ? inputPath
-                                  : currentPlan.sourcePaths[index];
-                              return _PreviewRow(
-                                sourcePath: sourcePath,
-                                originalName: currentPlan?.originalNames[index],
-                                proposedName: currentPlan?.proposedNames[index],
-                                status: currentPlan?.statuses[index],
-                                message: currentPlan?.messages[index],
-                                included: !excludedPaths.contains(inputPath),
-                                overridden: overridePaths.contains(inputPath),
-                                previewFailed: previewFailed,
-                                onIncludedChanged: applying || scanning
-                                    ? null
-                                    : (included) => onSetPathIncluded(
-                                        inputPath,
-                                        included,
-                                      ),
-                                onEditName:
-                                    applying || scanning || currentPlan == null
-                                    ? null
-                                    : () => onEditProposedName(
-                                        inputPath,
-                                        currentPlan.proposedNames[index],
-                                      ),
-                                onRemove: applying || scanning
-                                    ? null
-                                    : () => onRemovePath(inputPath),
-                              );
-                            },
-                          ),
-                        ),
-                      ],
                     ),
-            ),
-            _ActionBar(
-              plan: currentPlan,
-              applying: applying,
-              scanning: scanning,
-              canApply: canApply,
-              onApply: onApply,
-            ),
-          ],
+                  ],
+                ),
+              ),
+              SizedBox(
+                key: const ValueKey('preview-progress-slot'),
+                height: 2,
+                child: previewing || previewPending || scanning
+                    ? const LinearProgressIndicator(minHeight: 2)
+                    : const ColoredBox(color: Colors.transparent),
+              ),
+              Expanded(
+                child: paths.isEmpty
+                    ? _DropEmptyState(
+                        connected: connected,
+                        scanning: scanning,
+                        dragging: dragging,
+                        onChooseFiles: onChooseFiles,
+                        onChooseDirectory: onChooseDirectory,
+                      )
+                    : Column(
+                        children: [
+                          _PreviewColumns(
+                            includeAllValue: includeAllValue,
+                            enabled: !applying && !scanning,
+                            onChanged: onSetAllPathsIncluded,
+                          ),
+                          Expanded(
+                            child: ListView.builder(
+                              key: const ValueKey('preview-list'),
+                              controller: scrollController,
+                              itemExtent: _previewRowExtent,
+                              itemCount: rowCount,
+                              itemBuilder: (context, index) {
+                                final inputPath = paths[index];
+                                final sourcePath = currentPlan == null
+                                    ? inputPath
+                                    : currentPlan.sourcePaths[index];
+                                return Column(
+                                  children: [
+                                    Expanded(
+                                      child: _PreviewRow(
+                                        key: ValueKey('preview-row-$inputPath'),
+                                        sourcePath: sourcePath,
+                                        originalName:
+                                            currentPlan?.originalNames[index],
+                                        proposedName:
+                                            currentPlan?.proposedNames[index],
+                                        status: currentPlan?.statuses[index],
+                                        message: currentPlan?.messages[index],
+                                        included: !excludedPaths.contains(
+                                          inputPath,
+                                        ),
+                                        overridden: overridePaths.contains(
+                                          inputPath,
+                                        ),
+                                        selected: selectedPaths.contains(
+                                          inputPath,
+                                        ),
+                                        active: activePath == inputPath,
+                                        previewFailed: previewFailed,
+                                        onSelect: () => onSelectPath(inputPath),
+                                        onIncludedChanged: applying || scanning
+                                            ? null
+                                            : (included) => onSetPathIncluded(
+                                                inputPath,
+                                                included,
+                                              ),
+                                        onEditName:
+                                            applying ||
+                                                scanning ||
+                                                currentPlan == null
+                                            ? null
+                                            : () => onEditProposedName(
+                                                inputPath,
+                                                currentPlan
+                                                    .proposedNames[index],
+                                              ),
+                                        onRemove: applying || scanning
+                                            ? null
+                                            : () => onRemovePath(inputPath),
+                                      ),
+                                    ),
+                                    if (index + 1 < rowCount)
+                                      const Divider(height: 1),
+                                  ],
+                                );
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+              ),
+              _ActionBar(
+                plan: currentPlan,
+                applying: applying,
+                scanning: scanning,
+                canApply: canApply,
+                selectedCount: selectedPaths.length,
+                onIncludeSelected: () => onSetSelectedPathsIncluded(true),
+                onExcludeSelected: () => onSetSelectedPathsIncluded(false),
+                onClearSelection: onClearSelection,
+                onApply: onApply,
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -1901,7 +2165,15 @@ class _DropEmptyState extends StatelessWidget {
 }
 
 class _PreviewColumns extends StatelessWidget {
-  const _PreviewColumns();
+  const _PreviewColumns({
+    required this.includeAllValue,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final bool? includeAllValue;
+  final bool enabled;
+  final ValueChanged<bool> onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -1909,21 +2181,31 @@ class _PreviewColumns extends StatelessWidget {
       height: 38,
       padding: const EdgeInsets.symmetric(horizontal: 18),
       color: const Color(0xFF0F1218),
-      child: const Row(
+      child: Row(
         children: [
-          SizedBox(width: 40),
-          SizedBox(width: 28),
-          Expanded(
+          SizedBox(
+            width: 40,
+            child: Tooltip(
+              message: includeAllValue == true ? '排除全部檔案' : '納入全部檔案',
+              child: Checkbox(
+                tristate: true,
+                value: includeAllValue,
+                onChanged: enabled ? (value) => onChanged(value ?? true) : null,
+              ),
+            ),
+          ),
+          const SizedBox(width: 28),
+          const Expanded(
             flex: 5,
             child: Text('原始檔名', style: TextStyle(color: subtle, fontSize: 11)),
           ),
-          SizedBox(width: 18),
-          Expanded(
+          const SizedBox(width: 18),
+          const Expanded(
             flex: 5,
             child: Text('新檔名', style: TextStyle(color: subtle, fontSize: 11)),
           ),
-          SizedBox(width: 100),
-          SizedBox(width: 40),
+          const SizedBox(width: 100),
+          const SizedBox(width: 40),
         ],
       ),
     );
@@ -1932,6 +2214,7 @@ class _PreviewColumns extends StatelessWidget {
 
 class _PreviewRow extends StatelessWidget {
   const _PreviewRow({
+    super.key,
     required this.sourcePath,
     required this.originalName,
     required this.proposedName,
@@ -1939,7 +2222,10 @@ class _PreviewRow extends StatelessWidget {
     required this.message,
     required this.included,
     required this.overridden,
+    required this.selected,
+    required this.active,
     required this.previewFailed,
+    required this.onSelect,
     required this.onIncludedChanged,
     required this.onEditName,
     required this.onRemove,
@@ -1952,7 +2238,10 @@ class _PreviewRow extends StatelessWidget {
   final String? message;
   final bool included;
   final bool overridden;
+  final bool selected;
+  final bool active;
   final bool previewFailed;
+  final VoidCallback onSelect;
   final ValueChanged<bool>? onIncludedChanged;
   final VoidCallback? onEditName;
   final VoidCallback? onRemove;
@@ -1981,128 +2270,159 @@ class _PreviewRow extends StatelessWidget {
         .where((segment) => segment.isNotEmpty)
         .toList(growable: false);
     final fallbackName = pathSegments.isEmpty ? null : pathSegments.last;
-    return Container(
-      constraints: const BoxConstraints(minHeight: 64),
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 40,
-            child: Tooltip(
-              message: included ? '排除這個檔案' : '重新納入這個檔案',
-              child: Checkbox(
-                value: included,
-                onChanged: onIncludedChanged == null
-                    ? null
-                    : (value) => onIncludedChanged!(value ?? false),
+    return Semantics(
+      selected: selected,
+      button: true,
+      label: originalName ?? fallbackName ?? sourcePath,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onSelect,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            curve: Curves.easeOut,
+            constraints: const BoxConstraints(minHeight: 64),
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+            decoration: BoxDecoration(
+              color: selected
+                  ? primary.withValues(alpha: active ? 0.14 : 0.08)
+                  : Colors.transparent,
+              border: Border(
+                left: BorderSide(
+                  color: active ? primaryBright : Colors.transparent,
+                  width: 2,
+                ),
               ),
             ),
-          ),
-          SizedBox(width: 28, child: Icon(icon, color: color, size: 18)),
-          Expanded(
-            flex: 5,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Row(
               children: [
-                Opacity(
-                  opacity: included ? 1 : 0.45,
-                  child: Text(
-                    originalName ?? fallbackName ?? sourcePath,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Color(0xFFD5D8E1),
-                      fontSize: 13,
+                SizedBox(
+                  width: 40,
+                  child: Tooltip(
+                    message: included ? '排除這個檔案' : '重新納入這個檔案',
+                    child: Checkbox(
+                      value: included,
+                      onChanged: onIncludedChanged == null
+                          ? null
+                          : (value) => onIncludedChanged!(value ?? false),
                     ),
                   ),
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  sourcePath,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: subtle, fontSize: 10),
+                SizedBox(width: 28, child: Icon(icon, color: color, size: 18)),
+                Expanded(
+                  flex: 5,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Opacity(
+                        opacity: included ? 1 : 0.45,
+                        child: Text(
+                          originalName ?? fallbackName ?? sourcePath,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Color(0xFFD5D8E1),
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        sourcePath,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: subtle, fontSize: 10),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 18),
+                Expanded(
+                  flex: 5,
+                  child: Tooltip(
+                    message: onEditName == null ? '' : '點一下直接修改這個檔名',
+                    child: InkWell(
+                      onTap: onEditName,
+                      borderRadius: BorderRadius.circular(6),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 7),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Opacity(
+                                opacity: included ? 1 : 0.45,
+                                child: Text(
+                                  proposedName ??
+                                      (previewFailed
+                                          ? '預覽失敗，請檢查左側規則'
+                                          : '正在計算預覽…'),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: state == 'error'
+                                        ? danger
+                                        : Colors.white,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            if (overridden) ...[
+                              const SizedBox(width: 6),
+                              const Text(
+                                '手動',
+                                style: TextStyle(
+                                  color: primaryBright,
+                                  fontSize: 9,
+                                ),
+                              ),
+                            ],
+                            if (onEditName != null) ...[
+                              const SizedBox(width: 5),
+                              const Icon(
+                                Icons.edit_outlined,
+                                color: subtle,
+                                size: 14,
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 100,
+                  child: Text(
+                    !included
+                        ? '已排除'
+                        : message?.isNotEmpty == true
+                        ? message!
+                        : switch (state) {
+                            'ready' => '可套用',
+                            'unchanged' => '無變更',
+                            'error' => '預覽失敗',
+                            _ => '',
+                          },
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: color, fontSize: 10),
+                  ),
+                ),
+                SizedBox(
+                  width: 40,
+                  child: IconButton(
+                    onPressed: onRemove,
+                    icon: const Icon(Icons.close_rounded, size: 17),
+                    color: subtle,
+                    tooltip: '移除檔案',
+                  ),
                 ),
               ],
             ),
           ),
-          const SizedBox(width: 18),
-          Expanded(
-            flex: 5,
-            child: Tooltip(
-              message: onEditName == null ? '' : '點一下直接修改這個檔名',
-              child: InkWell(
-                onTap: onEditName,
-                borderRadius: BorderRadius.circular(6),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 7),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Opacity(
-                          opacity: included ? 1 : 0.45,
-                          child: Text(
-                            proposedName ??
-                                (previewFailed ? '預覽失敗，請檢查左側規則' : '正在計算預覽…'),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: state == 'error' ? danger : Colors.white,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ),
-                      if (overridden) ...[
-                        const SizedBox(width: 6),
-                        const Text(
-                          '手動',
-                          style: TextStyle(color: primaryBright, fontSize: 9),
-                        ),
-                      ],
-                      if (onEditName != null) ...[
-                        const SizedBox(width: 5),
-                        const Icon(
-                          Icons.edit_outlined,
-                          color: subtle,
-                          size: 14,
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-          SizedBox(
-            width: 100,
-            child: Text(
-              !included
-                  ? '已排除'
-                  : message?.isNotEmpty == true
-                  ? message!
-                  : switch (state) {
-                      'ready' => '可套用',
-                      'unchanged' => '無變更',
-                      'error' => '預覽失敗',
-                      _ => '',
-                    },
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: color, fontSize: 10),
-            ),
-          ),
-          SizedBox(
-            width: 40,
-            child: IconButton(
-              onPressed: onRemove,
-              icon: const Icon(Icons.close_rounded, size: 17),
-              color: subtle,
-              tooltip: '移除檔案',
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -2114,6 +2434,10 @@ class _ActionBar extends StatelessWidget {
     required this.applying,
     required this.scanning,
     required this.canApply,
+    required this.selectedCount,
+    required this.onIncludeSelected,
+    required this.onExcludeSelected,
+    required this.onClearSelection,
     required this.onApply,
   });
 
@@ -2121,6 +2445,10 @@ class _ActionBar extends StatelessWidget {
   final bool applying;
   final bool scanning;
   final bool canApply;
+  final int selectedCount;
+  final VoidCallback onIncludeSelected;
+  final VoidCallback onExcludeSelected;
+  final VoidCallback onClearSelection;
   final VoidCallback onApply;
 
   @override
@@ -2136,32 +2464,66 @@ class _ActionBar extends StatelessWidget {
       child: Row(
         children: [
           Expanded(
-            child: Wrap(
-              spacing: 9,
-              runSpacing: 7,
-              children: [
-                _CountBadge(
-                  color: mint,
-                  value: current?.renameableCount ?? 0,
-                  label: '可改名',
-                ),
-                _CountBadge(
-                  color: subtle,
-                  value: current?.unchangedCount ?? 0,
-                  label: '無變更',
-                ),
-                _CountBadge(
-                  color: danger,
-                  value: current?.errorCount ?? 0,
-                  label: '錯誤',
-                ),
-                _CountBadge(
-                  color: warning,
-                  value: current?.excludedCount ?? 0,
-                  label: '已排除',
-                ),
-              ],
-            ),
+            child: selectedCount > 0
+                ? Wrap(
+                    spacing: 6,
+                    runSpacing: 5,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Text(
+                        '$selectedCount 個已選',
+                        style: const TextStyle(
+                          color: primaryBright,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      TextButton.icon(
+                        onPressed: applying || scanning
+                            ? null
+                            : onIncludeSelected,
+                        icon: const Icon(Icons.check_rounded, size: 15),
+                        label: const Text('納入'),
+                      ),
+                      TextButton.icon(
+                        onPressed: applying || scanning
+                            ? null
+                            : onExcludeSelected,
+                        icon: const Icon(Icons.block_rounded, size: 15),
+                        label: const Text('排除'),
+                      ),
+                      TextButton(
+                        onPressed: onClearSelection,
+                        child: const Text('取消選取'),
+                      ),
+                    ],
+                  )
+                : Wrap(
+                    spacing: 9,
+                    runSpacing: 7,
+                    children: [
+                      _CountBadge(
+                        color: mint,
+                        value: current?.renameableCount ?? 0,
+                        label: '可改名',
+                      ),
+                      _CountBadge(
+                        color: subtle,
+                        value: current?.unchangedCount ?? 0,
+                        label: '無變更',
+                      ),
+                      _CountBadge(
+                        color: danger,
+                        value: current?.errorCount ?? 0,
+                        label: '錯誤',
+                      ),
+                      _CountBadge(
+                        color: warning,
+                        value: current?.excludedCount ?? 0,
+                        label: '已排除',
+                      ),
+                    ],
+                  ),
           ),
           const Spacer(),
           FilledButton.icon(
