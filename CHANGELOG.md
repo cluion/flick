@@ -6,7 +6,12 @@ All notable changes to Flick are documented in this file.
 
 ### Changed
 
-- Upgraded the Bridra Go and Flutter runtimes together from 0.9.0 to 0.10.0
+- Upgraded the Bridra Go and Flutter runtimes together from 0.9.0 to 0.10.1
+
+### Fixed
+
+- Prevented compact desktop windows from clipping or overflowing the empty
+  preview workspace, with an 800 by 640 minimum window size on every platform
 
 ## 0.2.0 - 2026-08-02
 

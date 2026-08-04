@@ -31,7 +31,7 @@ class FakeBackend implements BackendGateway {
   Future<HealthInfo> health({RpcCancellationToken? cancellationToken}) async {
     return const HealthInfo(
       status: 'ok',
-      frameworkVersion: '0.9.0',
+      frameworkVersion: '0.10.1',
       protocolVersion: 3,
       runtime: 'Go sidecar',
       architecture: 'Middleware -> Controller -> Service',
@@ -174,7 +174,7 @@ void main() {
     expect(find.text('v0.2.0 (2)'), findsOneWidget);
     expect(find.text('本機引擎就緒'), findsOneWidget);
     expect(
-      find.byTooltip('Go sidecar · Bridra 0.9.0 · Protocol 3'),
+      find.byTooltip('Go sidecar · Bridra 0.10.1 · Protocol 3'),
       findsOneWidget,
     );
     expect(find.text('改名規則'), findsOneWidget);
@@ -189,6 +189,24 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('加入檔案'), findsOneWidget);
     expect(find.text('加入資料夾'), findsOneWidget);
+  });
+
+  testWidgets('keeps the empty workspace inside a compact window', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(1155, 517);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(FlickApp(connector: () async => FakeBackend()));
+    await tester.pumpAndSettle();
+
+    expect(find.text('拖放檔案或資料夾到這裡'), findsOneWidget);
+    expect(find.text('選擇檔案'), findsOneWidget);
+    expect(find.text('選擇資料夾'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('shows advanced replace controls', (tester) async {

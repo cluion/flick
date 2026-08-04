@@ -2682,61 +2682,73 @@ class _DropEmptyState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 500),
-        margin: const EdgeInsets.all(28),
-        padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 42),
-        decoration: BoxDecoration(
-          color: dragging
-              ? primary.withValues(alpha: 0.12)
-              : surface.withValues(alpha: 0.7),
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(
-            color: dragging ? primary : border,
-            width: dragging ? 2 : 1,
-          ),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              dragging
-                  ? Icons.file_download_done_rounded
-                  : Icons.file_open_outlined,
-              size: 48,
-              color: dragging ? primaryBright : subtle,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxHeight < 340;
+          return Container(
+            constraints: const BoxConstraints(maxWidth: 500),
+            margin: EdgeInsets.all(compact ? 16 : 28),
+            padding: EdgeInsets.symmetric(
+              horizontal: compact ? 24 : 36,
+              vertical: compact ? 20 : 42,
             ),
-            const SizedBox(height: 18),
-            Text(
-              dragging ? '放開即可加入' : '拖放檔案或資料夾到這裡',
-              style: Theme.of(context).textTheme.titleLarge,
+            decoration: BoxDecoration(
+              color: dragging
+                  ? primary.withValues(alpha: 0.12)
+                  : surface.withValues(alpha: 0.7),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(
+                color: dragging ? primary : border,
+                width: dragging ? 2 : 1,
+              ),
             ),
-            const SizedBox(height: 8),
-            const Text(
-              'Flick 只會在你確認後才真正修改檔名',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: muted),
-            ),
-            const SizedBox(height: 22),
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              alignment: WrapAlignment.center,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                FilledButton.icon(
-                  onPressed: connected && !scanning ? onChooseFiles : null,
-                  icon: const Icon(Icons.add_rounded, size: 18),
-                  label: const Text('選擇檔案'),
+                Icon(
+                  dragging
+                      ? Icons.file_download_done_rounded
+                      : Icons.file_open_outlined,
+                  size: compact ? 36 : 48,
+                  color: dragging ? primaryBright : subtle,
                 ),
-                OutlinedButton.icon(
-                  onPressed: connected && !scanning ? onChooseDirectory : null,
-                  icon: const Icon(Icons.folder_open_outlined, size: 18),
-                  label: const Text('選擇資料夾'),
+                SizedBox(height: compact ? 10 : 18),
+                Text(
+                  dragging ? '放開即可加入' : '拖放檔案或資料夾到這裡',
+                  style: compact
+                      ? Theme.of(context).textTheme.titleMedium
+                      : Theme.of(context).textTheme.titleLarge,
+                ),
+                SizedBox(height: compact ? 6 : 8),
+                const Text(
+                  'Flick 只會在你確認後才真正修改檔名',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: muted),
+                ),
+                SizedBox(height: compact ? 12 : 22),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  alignment: WrapAlignment.center,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: connected && !scanning ? onChooseFiles : null,
+                      icon: const Icon(Icons.add_rounded, size: 18),
+                      label: const Text('選擇檔案'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: connected && !scanning
+                          ? onChooseDirectory
+                          : null,
+                      icon: const Icon(Icons.folder_open_outlined, size: 18),
+                      label: const Text('選擇資料夾'),
+                    ),
+                  ],
                 ),
               ],
             ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
