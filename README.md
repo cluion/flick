@@ -15,6 +15,7 @@ and undo.
 - Include or exclude files per rule using name, extension, path, or RE2 conditions
 - Preview, search, and visually sort every resulting name without touching the filesystem
 - Edit individual proposed names and include or exclude selected preview items in bulk
+- Reorder selected items in the processing order used by Sequence and List rules
 - Export the current original-to-proposed mapping as CSV
 - Detect duplicate names, existing targets, invalid names, and stale files
 - Apply a batch through temporary names so swaps and case-only renames are safe

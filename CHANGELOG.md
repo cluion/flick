@@ -4,9 +4,16 @@ All notable changes to Flick are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Selected-item processing-order controls that immediately recalculate Sequence
+  and List rule previews
+
 ### Changed
 
 - Upgraded the Bridra Go and Flutter runtimes together from 0.9.0 to 0.10.1
+- Clarified that preview checkboxes control rename inclusion while row selection
+  controls bulk actions
 
 ### Fixed
 

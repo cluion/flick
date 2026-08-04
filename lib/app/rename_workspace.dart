@@ -498,6 +498,48 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     });
   }
 
+  bool get _processingOrderVisible =>
+      _previewQuery.isEmpty &&
+      _previewSortField == PreviewSortField.addedOrder &&
+      _previewSortAscending;
+
+  void _showProcessingOrder() {
+    _previewSearchController.clear();
+    setState(() {
+      _previewQuery = '';
+      _previewSortField = PreviewSortField.addedOrder;
+      _previewSortAscending = true;
+      _visiblePreviewIndicesCache = null;
+      _selectionAnchorIndex = null;
+    });
+    _previewFocusNode.requestFocus();
+  }
+
+  void _moveSelectedPaths(PreviewOrderMove move) {
+    if (!_processingOrderVisible || _selectedPaths.isEmpty) return;
+    final reordered = moveSelectedPreviewPaths(
+      paths: _paths,
+      selectedPaths: _selectedPaths,
+      move: move,
+    );
+    if (listEquals(reordered, _paths)) return;
+    final activePath = _activePath;
+    setState(() {
+      _paths = reordered;
+      _plan = null;
+      _visiblePreviewIndicesCache = null;
+      _selectionAnchorIndex = null;
+      _previewFailed = false;
+      _error = null;
+    });
+    _schedulePreview(immediate: true);
+    if (activePath != null) {
+      final index = reordered.indexOf(activePath);
+      if (index >= 0) _ensurePreviewIndexVisible(index);
+    }
+    _previewFocusNode.requestFocus();
+  }
+
   KeyEventResult _handlePreviewKey(FocusNode _, KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
@@ -946,6 +988,18 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                       onClearSearch: _clearPreviewQuery,
                       onSortFieldChanged: _setPreviewSortField,
                       onToggleSortDirection: _togglePreviewSortDirection,
+                      processingOrderVisible: _processingOrderVisible,
+                      enabledOrderMoves: {
+                        for (final move in PreviewOrderMove.values)
+                          if (canMoveSelectedPreviewPaths(
+                            paths: _paths,
+                            selectedPaths: _selectedPaths,
+                            move: move,
+                          ))
+                            move,
+                      },
+                      onShowProcessingOrder: _showProcessingOrder,
+                      onMoveSelectedPaths: _moveSelectedPaths,
                       onEditProposedName: _editProposedName,
                       onClearPaths: _clearPaths,
                       onApply: _apply,
@@ -2161,6 +2215,10 @@ class _PreviewPanel extends StatelessWidget {
     required this.onClearSearch,
     required this.onSortFieldChanged,
     required this.onToggleSortDirection,
+    required this.processingOrderVisible,
+    required this.enabledOrderMoves,
+    required this.onShowProcessingOrder,
+    required this.onMoveSelectedPaths,
     required this.onEditProposedName,
     required this.onClearPaths,
     required this.onApply,
@@ -2202,6 +2260,10 @@ class _PreviewPanel extends StatelessWidget {
   final VoidCallback onClearSearch;
   final ValueChanged<PreviewSortField> onSortFieldChanged;
   final VoidCallback onToggleSortDirection;
+  final bool processingOrderVisible;
+  final Set<PreviewOrderMove> enabledOrderMoves;
+  final VoidCallback onShowProcessingOrder;
+  final ValueChanged<PreviewOrderMove> onMoveSelectedPaths;
   final Future<void> Function(String path, String proposedName)
   onEditProposedName;
   final VoidCallback onClearPaths;
@@ -2289,7 +2351,7 @@ class _PreviewPanel extends StatelessWidget {
                           ),
                           SizedBox(height: 2),
                           Text(
-                            '點選列可批次操作；Shift 可範圍選取',
+                            '勾選框控制納入改名；點選整列可批次操作',
                             style: TextStyle(color: subtle, fontSize: 12),
                           ),
                         ],
@@ -2436,8 +2498,12 @@ class _PreviewPanel extends StatelessWidget {
                 scanning: scanning,
                 canApply: canApply,
                 selectedCount: selectedPaths.length,
+                processingOrderVisible: processingOrderVisible,
+                enabledOrderMoves: enabledOrderMoves,
                 onIncludeSelected: () => onSetSelectedPathsIncluded(true),
                 onExcludeSelected: () => onSetSelectedPathsIncluded(false),
+                onShowProcessingOrder: onShowProcessingOrder,
+                onMoveSelectedPaths: onMoveSelectedPaths,
                 onClearSelection: onClearSelection,
                 onApply: onApply,
               ),
@@ -2510,7 +2576,7 @@ class _PreviewTools extends StatelessWidget {
           ),
           const SizedBox(width: 9),
           Tooltip(
-            message: '排序只改變顯示順序，不影響流水號或名稱清單對應',
+            message: '其他排序只改變顯示；處理順序會影響流水號與名稱清單對應',
             child: Container(
               width: 150,
               height: 38,
@@ -2795,7 +2861,8 @@ class _PreviewColumns extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 28),
+          const Text('納入', style: TextStyle(color: subtle, fontSize: 11)),
+          const SizedBox(width: 4),
           const Expanded(
             flex: 5,
             child: Text('原始檔名', style: TextStyle(color: subtle, fontSize: 11)),
@@ -2900,7 +2967,7 @@ class _PreviewRow extends StatelessWidget {
                 SizedBox(
                   width: 40,
                   child: Tooltip(
-                    message: included ? '排除這個檔案' : '重新納入這個檔案',
+                    message: included ? '取消納入（這次不改名）' : '納入這次改名',
                     child: Checkbox(
                       value: included,
                       onChanged: onIncludedChanged == null
@@ -3036,8 +3103,12 @@ class _ActionBar extends StatelessWidget {
     required this.scanning,
     required this.canApply,
     required this.selectedCount,
+    required this.processingOrderVisible,
+    required this.enabledOrderMoves,
     required this.onIncludeSelected,
     required this.onExcludeSelected,
+    required this.onShowProcessingOrder,
+    required this.onMoveSelectedPaths,
     required this.onClearSelection,
     required this.onApply,
   });
@@ -3047,8 +3118,12 @@ class _ActionBar extends StatelessWidget {
   final bool scanning;
   final bool canApply;
   final int selectedCount;
+  final bool processingOrderVisible;
+  final Set<PreviewOrderMove> enabledOrderMoves;
   final VoidCallback onIncludeSelected;
   final VoidCallback onExcludeSelected;
+  final VoidCallback onShowProcessingOrder;
+  final ValueChanged<PreviewOrderMove> onMoveSelectedPaths;
   final VoidCallback onClearSelection;
   final VoidCallback onApply;
 
@@ -3093,6 +3168,71 @@ class _ActionBar extends StatelessWidget {
                         icon: const Icon(Icons.block_rounded, size: 15),
                         label: const Text('排除'),
                       ),
+                      if (!processingOrderVisible)
+                        Tooltip(
+                          message: '清除搜尋並切換至會影響流水號與名稱清單的處理順序',
+                          child: TextButton.icon(
+                            onPressed: applying || scanning
+                                ? null
+                                : onShowProcessingOrder,
+                            icon: const Icon(Icons.swap_vert_rounded, size: 16),
+                            label: const Text('顯示處理順序'),
+                          ),
+                        )
+                      else ...[
+                        _OrderMoveButton(
+                          key: const ValueKey('move-selected-to-start'),
+                          icon: Icons.vertical_align_top_rounded,
+                          tooltip: '移到最前',
+                          enabled:
+                              !applying &&
+                              !scanning &&
+                              enabledOrderMoves.contains(
+                                PreviewOrderMove.toStart,
+                              ),
+                          onPressed: () =>
+                              onMoveSelectedPaths(PreviewOrderMove.toStart),
+                        ),
+                        _OrderMoveButton(
+                          key: const ValueKey('move-selected-earlier'),
+                          icon: Icons.keyboard_arrow_up_rounded,
+                          tooltip: '向前移一格',
+                          enabled:
+                              !applying &&
+                              !scanning &&
+                              enabledOrderMoves.contains(
+                                PreviewOrderMove.earlier,
+                              ),
+                          onPressed: () =>
+                              onMoveSelectedPaths(PreviewOrderMove.earlier),
+                        ),
+                        _OrderMoveButton(
+                          key: const ValueKey('move-selected-later'),
+                          icon: Icons.keyboard_arrow_down_rounded,
+                          tooltip: '向後移一格',
+                          enabled:
+                              !applying &&
+                              !scanning &&
+                              enabledOrderMoves.contains(
+                                PreviewOrderMove.later,
+                              ),
+                          onPressed: () =>
+                              onMoveSelectedPaths(PreviewOrderMove.later),
+                        ),
+                        _OrderMoveButton(
+                          key: const ValueKey('move-selected-to-end'),
+                          icon: Icons.vertical_align_bottom_rounded,
+                          tooltip: '移到最後',
+                          enabled:
+                              !applying &&
+                              !scanning &&
+                              enabledOrderMoves.contains(
+                                PreviewOrderMove.toEnd,
+                              ),
+                          onPressed: () =>
+                              onMoveSelectedPaths(PreviewOrderMove.toEnd),
+                        ),
+                      ],
                       TextButton(
                         onPressed: onClearSelection,
                         child: const Text('取消選取'),
@@ -3139,6 +3279,32 @@ class _ActionBar extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _OrderMoveButton extends StatelessWidget {
+  const _OrderMoveButton({
+    super.key,
+    required this.icon,
+    required this.tooltip,
+    required this.enabled,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final bool enabled;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      constraints: const BoxConstraints.tightFor(width: 36, height: 36),
+      padding: const EdgeInsets.all(7),
+      onPressed: enabled ? onPressed : null,
+      tooltip: tooltip,
+      icon: Icon(icon, size: 18),
     );
   }
 }

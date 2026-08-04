@@ -8,9 +8,11 @@ enum PreviewSortField {
   path,
 }
 
+enum PreviewOrderMove { toStart, earlier, later, toEnd }
+
 extension PreviewSortFieldLabel on PreviewSortField {
   String get label => switch (this) {
-    PreviewSortField.addedOrder => '加入順序',
+    PreviewSortField.addedOrder => '處理順序',
     PreviewSortField.originalName => '原始檔名',
     PreviewSortField.proposedName => '新檔名',
     PreviewSortField.extension => '副檔名',
@@ -99,4 +101,66 @@ int _compareRecords(
 
 int _compareText(String left, String right) {
   return left.toLowerCase().compareTo(right.toLowerCase());
+}
+
+List<String> moveSelectedPreviewPaths({
+  required List<String> paths,
+  required Set<String> selectedPaths,
+  required PreviewOrderMove move,
+}) {
+  if (paths.length < 2 || selectedPaths.isEmpty) {
+    return List.unmodifiable(paths);
+  }
+  final selected = paths.where(selectedPaths.contains).toList(growable: false);
+  if (selected.isEmpty || selected.length == paths.length) {
+    return List.unmodifiable(paths);
+  }
+  final unselected = paths
+      .where((path) => !selectedPaths.contains(path))
+      .toList(growable: false);
+  switch (move) {
+    case PreviewOrderMove.toStart:
+      return List.unmodifiable([...selected, ...unselected]);
+    case PreviewOrderMove.toEnd:
+      return List.unmodifiable([...unselected, ...selected]);
+    case PreviewOrderMove.earlier:
+      final reordered = [...paths];
+      for (var index = 1; index < reordered.length; index++) {
+        if (selectedPaths.contains(reordered[index]) &&
+            !selectedPaths.contains(reordered[index - 1])) {
+          final previous = reordered[index - 1];
+          reordered[index - 1] = reordered[index];
+          reordered[index] = previous;
+        }
+      }
+      return List.unmodifiable(reordered);
+    case PreviewOrderMove.later:
+      final reordered = [...paths];
+      for (var index = reordered.length - 2; index >= 0; index--) {
+        if (selectedPaths.contains(reordered[index]) &&
+            !selectedPaths.contains(reordered[index + 1])) {
+          final next = reordered[index + 1];
+          reordered[index + 1] = reordered[index];
+          reordered[index] = next;
+        }
+      }
+      return List.unmodifiable(reordered);
+  }
+}
+
+bool canMoveSelectedPreviewPaths({
+  required List<String> paths,
+  required Set<String> selectedPaths,
+  required PreviewOrderMove move,
+}) {
+  final reordered = moveSelectedPreviewPaths(
+    paths: paths,
+    selectedPaths: selectedPaths,
+    move: move,
+  );
+  if (paths.length != reordered.length) return true;
+  for (var index = 0; index < paths.length; index++) {
+    if (paths[index] != reordered[index]) return true;
+  }
+  return false;
 }

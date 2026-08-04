@@ -81,4 +81,71 @@ void main() {
       [0, 1],
     );
   });
+
+  test('moves selected paths while preserving their relative order', () {
+    const paths = ['a', 'b', 'c', 'd', 'e'];
+    const selected = {'b', 'd'};
+
+    expect(
+      moveSelectedPreviewPaths(
+        paths: paths,
+        selectedPaths: selected,
+        move: PreviewOrderMove.toStart,
+      ),
+      ['b', 'd', 'a', 'c', 'e'],
+    );
+    expect(
+      moveSelectedPreviewPaths(
+        paths: paths,
+        selectedPaths: selected,
+        move: PreviewOrderMove.earlier,
+      ),
+      ['b', 'a', 'd', 'c', 'e'],
+    );
+    expect(
+      moveSelectedPreviewPaths(
+        paths: paths,
+        selectedPaths: selected,
+        move: PreviewOrderMove.later,
+      ),
+      ['a', 'c', 'b', 'e', 'd'],
+    );
+    expect(
+      moveSelectedPreviewPaths(
+        paths: paths,
+        selectedPaths: selected,
+        move: PreviewOrderMove.toEnd,
+      ),
+      ['a', 'c', 'e', 'b', 'd'],
+    );
+  });
+
+  test('reports whether a selected move changes processing order', () {
+    const paths = ['a', 'b', 'c'];
+
+    expect(
+      canMoveSelectedPreviewPaths(
+        paths: paths,
+        selectedPaths: const {'a'},
+        move: PreviewOrderMove.earlier,
+      ),
+      isFalse,
+    );
+    expect(
+      canMoveSelectedPreviewPaths(
+        paths: paths,
+        selectedPaths: const {'a'},
+        move: PreviewOrderMove.later,
+      ),
+      isTrue,
+    );
+    expect(
+      moveSelectedPreviewPaths(
+        paths: paths,
+        selectedPaths: const {'missing'},
+        move: PreviewOrderMove.toEnd,
+      ),
+      paths,
+    );
+  });
 }

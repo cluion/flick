@@ -389,8 +389,8 @@ void main() {
     await _dropFile(tester, file.path, backend);
     await _pumpAsyncWork(tester);
 
-    expect(find.byTooltip('排除這個檔案'), findsOneWidget);
-    await tester.tap(find.byTooltip('排除這個檔案'));
+    expect(find.byTooltip('取消納入（這次不改名）'), findsOneWidget);
+    await tester.tap(find.byTooltip('取消納入（這次不改名）'));
     await _pumpAsyncWork(tester);
 
     expect(backend.lastPreviewRequest?.excludedPaths, [file.path]);
@@ -463,7 +463,7 @@ void main() {
     final progressSlot = find.byKey(const ValueKey('preview-progress-slot'));
     expect(tester.getSize(progressSlot).height, 2);
 
-    await tester.tap(find.byTooltip('排除這個檔案'));
+    await tester.tap(find.byTooltip('取消納入（這次不改名）'));
     await tester.pump(const Duration(milliseconds: 40));
     expect(backend.previewRequests.length, baselineRequests);
     expect(tester.getTopLeft(find.text('原始檔名')).dy, columnsY);
@@ -474,9 +474,9 @@ void main() {
       isNull,
     );
 
-    await tester.tap(find.byTooltip('重新納入這個檔案'));
+    await tester.tap(find.byTooltip('納入這次改名'));
     await tester.pump(const Duration(milliseconds: 40));
-    await tester.tap(find.byTooltip('排除這個檔案'));
+    await tester.tap(find.byTooltip('取消納入（這次不改名）'));
     await tester.pump(const Duration(milliseconds: 100));
     expect(backend.previewRequests.length, baselineRequests);
     expect(tester.getTopLeft(find.text('原始檔名')).dy, columnsY);
@@ -536,6 +536,67 @@ void main() {
     await tester.tap(find.text('取消選取'));
     await tester.pump();
     expect(find.text('3 個已選'), findsNothing);
+  });
+
+  testWidgets('reorders selected items in processing order', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(1155, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final directory = Directory.systemTemp.createTempSync('flick-widget-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final files = ['one.txt', 'two.txt', 'three.txt']
+        .map((name) => File('${directory.path}/$name')..writeAsStringSync(name))
+        .toList(growable: false);
+    final backend = FakeBackend();
+
+    await tester.pumpWidget(FlickApp(connector: () async => backend));
+    await tester.pumpAndSettle();
+    await _dropFiles(
+      tester,
+      files.map((file) => file.path).toList(growable: false),
+      backend,
+    );
+    await _pumpAsyncWork(tester);
+
+    await tester.tap(find.text('two.txt'));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('move-selected-earlier')));
+    await _pumpAsyncWork(tester);
+
+    expect(backend.lastPreviewRequest?.paths, [
+      files[1].path,
+      files[0].path,
+      files[2].path,
+    ]);
+    expect(
+      tester.getTopLeft(find.text('two.txt')).dy,
+      lessThan(tester.getTopLeft(find.text('one.txt')).dy),
+    );
+    expect(find.text('1 個已選'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('preview-sort-field')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('原始檔名').last);
+    await tester.pumpAndSettle();
+    expect(find.text('顯示處理順序'), findsOneWidget);
+
+    await tester.tap(find.text('顯示處理順序'));
+    await tester.pump();
+    expect(find.text('顯示處理順序'), findsNothing);
+    expect(find.byKey(const ValueKey('move-selected-later')), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text('two.txt')).dy,
+      lessThan(tester.getTopLeft(find.text('one.txt')).dy),
+    );
+
+    await tester.tap(find.byKey(const ValueKey('move-selected-later')));
+    await _pumpAsyncWork(tester);
+    expect(
+      backend.lastPreviewRequest?.paths,
+      files.map((file) => file.path).toList(growable: false),
+    );
   });
 
   testWidgets('supports preview keyboard navigation and editing', (
