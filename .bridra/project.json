@@ -3,7 +3,7 @@
   "projectName": "flick",
   "goModule": "github.com/cluion/flick/backend",
   "frameworkModule": "github.com/cluion/bridra/backend",
-  "frameworkVersion": "0.10.0",
+  "frameworkVersion": "0.10.1",
   "templateVersion": 2,
   "protocolVersion": 3
 }

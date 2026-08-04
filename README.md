@@ -67,8 +67,8 @@ token-free SHA-256 manifest under `build/bridra/`.
 
 ## Bridra dependency
 
-- Go module: `github.com/cluion/bridra/backend` `v0.10.0`
-- Flutter package: `bridra_flutter` `^0.10.0`
+- Go module: `github.com/cluion/bridra/backend` `v0.10.1`
+- Flutter package: `bridra_flutter` `^0.10.1`
 - RPC protocol: `3`
 
 Before changing framework versions:
