@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import '../api/backend_gateway.dart';
+import '../platform/file_actions.dart';
 import 'rename_workspace.dart';
 
 typedef BackendConnector = Future<BackendGateway> Function();
@@ -32,10 +33,14 @@ class FlickApp extends StatelessWidget {
     super.key,
     this.connector = RpcBackend.connect,
     this.versionLoader = loadAppVersion,
+    this.revealFile = revealFileInManager,
+    this.copyPath = copyFilePath,
   });
 
   final BackendConnector connector;
   final AppVersionLoader versionLoader;
+  final FilePathAction revealFile;
+  final FilePathAction copyPath;
 
   @override
   Widget build(BuildContext context) {
@@ -115,7 +120,12 @@ class FlickApp extends StatelessWidget {
         dividerColor: border,
         useMaterial3: true,
       ),
-      home: RenameWorkspace(connector: connector, versionLoader: versionLoader),
+      home: RenameWorkspace(
+        connector: connector,
+        versionLoader: versionLoader,
+        revealFile: revealFile,
+        copyPath: copyPath,
+      ),
     );
   }
 }

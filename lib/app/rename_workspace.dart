@@ -16,6 +16,7 @@ import '../domain/file_list_io.dart';
 import '../domain/preview_list_options.dart';
 import '../domain/rename_list_io.dart';
 import '../domain/rename_rule.dart';
+import '../platform/file_actions.dart';
 import 'flick_app.dart';
 
 const _savedRulesKey = 'flick.rename-rules.v2';
@@ -27,10 +28,14 @@ class RenameWorkspace extends StatefulWidget {
     super.key,
     required this.connector,
     required this.versionLoader,
+    required this.revealFile,
+    required this.copyPath,
   });
 
   final BackendConnector connector;
   final AppVersionLoader versionLoader;
+  final FilePathAction revealFile;
+  final FilePathAction copyPath;
 
   @override
   State<RenameWorkspace> createState() => _RenameWorkspaceState();
@@ -136,6 +141,32 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     try {
       final files = await openFiles();
       _addPaths(files.map((file) => file.path));
+    } on Object catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  Future<void> _revealPath(String path) async {
+    try {
+      await widget.revealFile(path);
+      if (!mounted) return;
+      setState(() {
+        _notice = '已開啟 ${_fileNameFromPath(path)} 的所在位置';
+        _error = null;
+      });
+    } on Object catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  Future<void> _copyPath(String path) async {
+    try {
+      await widget.copyPath(path);
+      if (!mounted) return;
+      setState(() {
+        _notice = '已複製完整路徑：$path';
+        _error = null;
+      });
     } on Object catch (error) {
       if (mounted) setState(() => _error = error);
     }
@@ -1128,6 +1159,8 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                       onChooseDirectory: _chooseDirectory,
                       onSaveFileList: _saveFileList,
                       onLoadFileList: _loadFileList,
+                      onRevealPath: _revealPath,
+                      onCopyPath: _copyPath,
                       onRemovePath: _removePath,
                       onSetPathIncluded: _setPathIncluded,
                       onSetAllPathsIncluded: _setAllPathsIncluded,
@@ -2335,6 +2368,8 @@ enum _AddSource { files, directory }
 
 enum _FileListAction { load, save }
 
+enum _PreviewPathAction { reveal, copy }
+
 class _PreviewPanel extends StatelessWidget {
   const _PreviewPanel({
     required this.paths,
@@ -2359,6 +2394,8 @@ class _PreviewPanel extends StatelessWidget {
     required this.onChooseDirectory,
     required this.onSaveFileList,
     required this.onLoadFileList,
+    required this.onRevealPath,
+    required this.onCopyPath,
     required this.onRemovePath,
     required this.onSetPathIncluded,
     required this.onSetAllPathsIncluded,
@@ -2406,6 +2443,8 @@ class _PreviewPanel extends StatelessWidget {
   final VoidCallback onChooseDirectory;
   final VoidCallback onSaveFileList;
   final VoidCallback onLoadFileList;
+  final ValueChanged<String> onRevealPath;
+  final ValueChanged<String> onCopyPath;
   final ValueChanged<String> onRemovePath;
   final void Function(String path, bool included) onSetPathIncluded;
   final ValueChanged<bool> onSetAllPathsIncluded;
@@ -2441,6 +2480,7 @@ class _PreviewPanel extends StatelessWidget {
             currentPlan.sourcePaths.length,
             currentPlan.originalNames.length,
             currentPlan.proposedNames.length,
+            currentPlan.targetPaths.length,
             currentPlan.statuses.length,
             currentPlan.messages.length,
             currentPlan.included.length,
@@ -2600,6 +2640,8 @@ class _PreviewPanel extends StatelessWidget {
                                                 'preview-row-$inputPath',
                                               ),
                                               sourcePath: sourcePath,
+                                              targetPath: currentPlan
+                                                  ?.targetPaths[index],
                                               originalName: currentPlan
                                                   ?.originalNames[index],
                                               proposedName: currentPlan
@@ -2638,6 +2680,10 @@ class _PreviewPanel extends StatelessWidget {
                                                       currentPlan
                                                           .proposedNames[index],
                                                     ),
+                                              onReveal: () =>
+                                                  onRevealPath(inputPath),
+                                              onCopyPath: () =>
+                                                  onCopyPath(inputPath),
                                               onRemove: applying || scanning
                                                   ? null
                                                   : () =>
@@ -3109,7 +3155,7 @@ class _PreviewColumns extends StatelessWidget {
             child: Text('新檔名', style: TextStyle(color: subtle, fontSize: 11)),
           ),
           const SizedBox(width: 100),
-          const SizedBox(width: 40),
+          const SizedBox(width: 80),
         ],
       ),
     );
@@ -3120,6 +3166,7 @@ class _PreviewRow extends StatelessWidget {
   const _PreviewRow({
     super.key,
     required this.sourcePath,
+    required this.targetPath,
     required this.originalName,
     required this.proposedName,
     required this.status,
@@ -3132,10 +3179,13 @@ class _PreviewRow extends StatelessWidget {
     required this.onSelect,
     required this.onIncludedChanged,
     required this.onEditName,
+    required this.onReveal,
+    required this.onCopyPath,
     required this.onRemove,
   });
 
   final String sourcePath;
+  final String? targetPath;
   final String? originalName;
   final String? proposedName;
   final String? status;
@@ -3148,7 +3198,40 @@ class _PreviewRow extends StatelessWidget {
   final VoidCallback onSelect;
   final ValueChanged<bool>? onIncludedChanged;
   final VoidCallback? onEditName;
+  final VoidCallback onReveal;
+  final VoidCallback onCopyPath;
   final VoidCallback? onRemove;
+
+  void _handlePathAction(_PreviewPathAction action) {
+    switch (action) {
+      case _PreviewPathAction.reveal:
+        onReveal();
+      case _PreviewPathAction.copy:
+        onCopyPath();
+    }
+  }
+
+  Future<void> _showPathActions(
+    BuildContext context,
+    TapDownDetails details,
+  ) async {
+    final overlay = Overlay.of(context).context.findRenderObject();
+    if (overlay is! RenderBox) return;
+    final action = await showMenu<_PreviewPathAction>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(
+          details.globalPosition.dx,
+          details.globalPosition.dy,
+          0,
+          0,
+        ),
+        Offset.zero & overlay.size,
+      ),
+      items: _previewPathActionItems(),
+    );
+    if (action != null) _handlePathAction(action);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -3182,6 +3265,8 @@ class _PreviewRow extends StatelessWidget {
         color: Colors.transparent,
         child: InkWell(
           onTap: onSelect,
+          onSecondaryTapDown: (details) =>
+              unawaited(_showPathActions(context, details)),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 120),
             curve: Curves.easeOut,
@@ -3215,36 +3300,43 @@ class _PreviewRow extends StatelessWidget {
                 SizedBox(width: 28, child: Icon(icon, color: color, size: 18)),
                 Expanded(
                   flex: 5,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Opacity(
-                        opacity: included ? 1 : 0.45,
-                        child: Text(
-                          originalName ?? fallbackName ?? sourcePath,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Color(0xFFD5D8E1),
-                            fontSize: 13,
+                  child: Tooltip(
+                    message:
+                        '${originalName ?? fallbackName ?? sourcePath}\n$sourcePath',
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Opacity(
+                          opacity: included ? 1 : 0.45,
+                          child: Text(
+                            originalName ?? fallbackName ?? sourcePath,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Color(0xFFD5D8E1),
+                              fontSize: 13,
+                            ),
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        sourcePath,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: subtle, fontSize: 10),
-                      ),
-                    ],
+                        const SizedBox(height: 3),
+                        Text(
+                          sourcePath,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: subtle, fontSize: 10),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
                 const SizedBox(width: 18),
                 Expanded(
                   flex: 5,
                   child: Tooltip(
-                    message: onEditName == null ? '' : '點一下直接修改這個檔名',
+                    message: [
+                      proposedName ?? (previewFailed ? '預覽失敗' : '正在計算預覽…'),
+                      ?targetPath,
+                    ].join('\n'),
                     child: InkWell(
                       onTap: onEditName,
                       borderRadius: BorderRadius.circular(6),
@@ -3284,10 +3376,13 @@ class _PreviewRow extends StatelessWidget {
                             ],
                             if (onEditName != null) ...[
                               const SizedBox(width: 5),
-                              const Icon(
-                                Icons.edit_outlined,
-                                color: subtle,
-                                size: 14,
+                              const Tooltip(
+                                message: '點一下直接修改這個檔名',
+                                child: Icon(
+                                  Icons.edit_outlined,
+                                  color: subtle,
+                                  size: 14,
+                                ),
                               ),
                             ],
                           ],
@@ -3316,6 +3411,20 @@ class _PreviewRow extends StatelessWidget {
                 ),
                 SizedBox(
                   width: 40,
+                  child: PopupMenuButton<_PreviewPathAction>(
+                    key: ValueKey('preview-path-menu-$sourcePath'),
+                    tooltip: '檔案動作',
+                    onSelected: _handlePathAction,
+                    itemBuilder: (context) => _previewPathActionItems(),
+                    icon: const Icon(
+                      Icons.more_horiz_rounded,
+                      color: subtle,
+                      size: 18,
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 40,
                   child: IconButton(
                     onPressed: onRemove,
                     icon: const Icon(Icons.close_rounded, size: 17),
@@ -3330,6 +3439,27 @@ class _PreviewRow extends StatelessWidget {
       ),
     );
   }
+}
+
+List<PopupMenuEntry<_PreviewPathAction>> _previewPathActionItems() {
+  return const [
+    PopupMenuItem(
+      value: _PreviewPathAction.reveal,
+      child: ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: Icon(Icons.folder_open_outlined),
+        title: Text('在檔案管理器中顯示'),
+      ),
+    ),
+    PopupMenuItem(
+      value: _PreviewPathAction.copy,
+      child: ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: Icon(Icons.copy_rounded),
+        title: Text('複製完整路徑'),
+      ),
+    ),
+  ];
 }
 
 class _ActionBar extends StatelessWidget {
@@ -3594,6 +3724,7 @@ String _friendlyError(Object error) {
     };
   }
   if (error case FormatException(:final message)) return message.toString();
+  if (error case FileSystemException(:final message)) return message;
   final text = error.toString();
   const prefix = 'BackendProtocolException: ';
   if (text.startsWith(prefix)) return text.substring(prefix.length);

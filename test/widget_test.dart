@@ -9,6 +9,8 @@ import 'package:file_selector_platform_interface/file_selector_platform_interfac
 import 'package:flick/api/backend_gateway.dart';
 import 'package:flick/app/flick_app.dart';
 import 'package:flick/domain/file_list_io.dart';
+import 'package:flutter/gestures.dart'
+    show PointerDeviceKind, kSecondaryMouseButton;
 import 'package:flutter/material.dart'
     show
         FilledButton,
@@ -344,6 +346,61 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('reveals and copies a file path from row actions', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(1280, 820);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final directory = Directory.systemTemp.createTempSync('flick-widget-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final file = File('${directory.path}/a very long original name.txt')
+      ..writeAsStringSync('fixture');
+    final revealedPaths = <String>[];
+    final copiedPaths = <String>[];
+    final backend = FakeBackend();
+
+    await tester.pumpWidget(
+      FlickApp(
+        connector: () async => backend,
+        revealFile: (path) async => revealedPaths.add(path),
+        copyPath: (path) async => copiedPaths.add(path),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await _dropFile(tester, file.path, backend);
+    await _pumpAsyncWork(tester);
+
+    expect(
+      find.byTooltip('a very long original name.txt\n${file.path}'),
+      findsOneWidget,
+    );
+    expect(find.byTooltip('final.txt\n/tmp/final.txt'), findsOneWidget);
+
+    await tester.tap(find.byKey(ValueKey('preview-path-menu-${file.path}')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('在檔案管理器中顯示').last);
+    await tester.pumpAndSettle();
+    expect(revealedPaths, [file.path]);
+
+    final row = find.byKey(ValueKey('preview-row-${file.path}'));
+    final gesture = await tester.startGesture(
+      tester.getCenter(row),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(find.text('複製完整路徑'), findsOneWidget);
+    await tester.tap(find.text('複製完整路徑'));
+    await tester.pumpAndSettle();
+
+    expect(copiedPaths, [file.path]);
+    expect(find.text('已複製完整路徑：${file.path}'), findsOneWidget);
+  });
+
   testWidgets('fits file list controls at the minimum desktop width', (
     tester,
   ) async {
@@ -352,13 +409,24 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
+    final directory = Directory.systemTemp.createTempSync('flick-widget-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final file = File('${directory.path}/minimum-width.txt')
+      ..writeAsStringSync('fixture');
+    final backend = FakeBackend();
 
-    await tester.pumpWidget(FlickApp(connector: () async => FakeBackend()));
+    await tester.pumpWidget(FlickApp(connector: () async => backend));
     await tester.pumpAndSettle();
     await tester.tap(find.text('檔案預覽'));
     await tester.pumpAndSettle();
+    await _dropFile(tester, file.path, backend);
+    await _pumpAsyncWork(tester);
 
     expect(find.byKey(const ValueKey('file-list-menu')), findsOneWidget);
+    expect(
+      find.byKey(ValueKey('preview-path-menu-${file.path}')),
+      findsOneWidget,
+    );
     expect(find.text('清單'), findsOneWidget);
     expect(find.text('加入'), findsOneWidget);
     expect(tester.takeException(), isNull);
