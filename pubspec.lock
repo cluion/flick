@@ -21,10 +21,10 @@ packages:
     dependency: "direct main"
     description:
       name: bridra_flutter
-      sha256: "2c6ba9426ae3bdb59608cb3c13d95628153f4a439d78a919d974f816388f362d"
+      sha256: a3ee0b8927fe5cd68fa0100fe520c08cf3bc527f55cd7dc975a90f3ba28fd00f
       url: "https://pub.dev"
     source: hosted
-    version: "0.10.1"
+    version: "0.11.0"
   characters:
     dependency: transitive
     description:
