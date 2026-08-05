@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/backend_gateway.dart';
 import '../domain/directory_import_options.dart';
+import '../domain/file_list_io.dart';
 import '../domain/preview_list_options.dart';
 import '../domain/rename_list_io.dart';
 import '../domain/rename_rule.dart';
@@ -137,6 +138,153 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
       _addPaths(files.map((file) => file.path));
     } on Object catch (error) {
       if (mounted) setState(() => _error = error);
+    }
+  }
+
+  Future<void> _saveFileList() async {
+    if (_paths.isEmpty) return;
+    final paths = List<String>.of(_paths);
+    final excludedPaths = Set<String>.of(_excludedPaths);
+    final nameOverrides = Map<String, String>.of(_nameOverrides);
+    try {
+      final location = await getSaveLocation(
+        acceptedTypeGroups: const [
+          XTypeGroup(label: 'Flick 檔案清單', extensions: ['flicklist']),
+        ],
+        suggestedName: 'flick-files.flicklist',
+        confirmButtonText: '儲存清單',
+      );
+      if (location == null || !mounted) return;
+      final outputPath = location.path.toLowerCase().endsWith('.flicklist')
+          ? location.path
+          : '${location.path}.flicklist';
+      await File(outputPath).writeAsString(
+        encodeFlickFileList(
+          paths: paths,
+          excludedPaths: excludedPaths,
+          nameOverrides: nameOverrides,
+        ),
+        flush: true,
+      );
+      if (!mounted) return;
+      setState(() {
+        _notice = '已將 ${paths.length} 個檔案儲存到 ${_fileNameFromPath(outputPath)}';
+        _error = null;
+      });
+    } on Object catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  Future<void> _loadFileList() async {
+    var loading = false;
+    try {
+      final file = await openFile(
+        acceptedTypeGroups: const [
+          XTypeGroup(label: 'Flick 檔案清單', extensions: ['flicklist']),
+        ],
+        confirmButtonText: '載入清單',
+      );
+      if (file == null || !mounted) return;
+      final document = decodeFlickFileList(await file.readAsString());
+      if (document.items.isEmpty) {
+        throw const FormatException('檔案清單沒有任何項目');
+      }
+      if (document.items.length > _maxRenameItems) {
+        throw FormatException('檔案清單超過 $_maxRenameItems 個項目的上限');
+      }
+
+      setState(() {
+        _scanning = true;
+        _error = null;
+        _notice = null;
+      });
+      loading = true;
+      final availableItems = <FlickFileListItem>[];
+      var unavailableCount = 0;
+      for (final item in document.items) {
+        try {
+          final type = await FileSystemEntity.type(
+            item.path,
+            followLinks: false,
+          );
+          if (type == FileSystemEntityType.file) {
+            availableItems.add(item);
+          } else {
+            unavailableCount++;
+          }
+        } on Object {
+          unavailableCount++;
+        }
+      }
+      if (!mounted) return;
+      if (availableItems.isEmpty) {
+        throw const FormatException('清單中的檔案都已不存在或無法讀取');
+      }
+
+      if (_paths.isNotEmpty) {
+        final replace = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            backgroundColor: surfaceRaised,
+            title: const Text('取代目前的檔案清單？'),
+            content: Text(
+              '載入 ${availableItems.length} 個檔案會取代目前的 ${_paths.length} 個檔案；改名規則不會變更。',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('載入並取代'),
+              ),
+            ],
+          ),
+        );
+        if (replace != true || !mounted) return;
+      }
+
+      _previewGeneration++;
+      _previewTimer?.cancel();
+      _previewSearchController.clear();
+      setState(() {
+        _paths = List.unmodifiable(availableItems.map((item) => item.path));
+        _excludedPaths
+          ..clear()
+          ..addAll(
+            availableItems
+                .where((item) => !item.included)
+                .map((item) => item.path),
+          );
+        _nameOverrides
+          ..clear()
+          ..addEntries(
+            availableItems
+                .where((item) => item.overrideName != null)
+                .map((item) => MapEntry(item.path, item.overrideName!)),
+          );
+        _selectedPaths.clear();
+        _activePath = null;
+        _selectionAnchorIndex = null;
+        _previewQuery = '';
+        _previewSortField = PreviewSortField.addedOrder;
+        _previewSortAscending = true;
+        _visiblePreviewIndicesCache = null;
+        _plan = null;
+        _previewFailed = false;
+        _previewPending = false;
+        _notice =
+            '已從 ${file.name} 載入 ${availableItems.length} 個檔案'
+            '${unavailableCount == 0 ? '' : '，略過 $unavailableCount 個無法使用的項目'}';
+        _error = null;
+      });
+      _schedulePreview(immediate: true);
+    } on Object catch (error) {
+      if (mounted) setState(() => _error = error);
+    } finally {
+      if (loading && mounted) setState(() => _scanning = false);
     }
   }
 
@@ -978,6 +1126,8 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                       dragging: _dragging,
                       onChooseFiles: _chooseFiles,
                       onChooseDirectory: _chooseDirectory,
+                      onSaveFileList: _saveFileList,
+                      onLoadFileList: _loadFileList,
                       onRemovePath: _removePath,
                       onSetPathIncluded: _setPathIncluded,
                       onSetAllPathsIncluded: _setAllPathsIncluded,
@@ -2183,6 +2333,8 @@ class _DirectoryImportDialogState extends State<_DirectoryImportDialog> {
 
 enum _AddSource { files, directory }
 
+enum _FileListAction { load, save }
+
 class _PreviewPanel extends StatelessWidget {
   const _PreviewPanel({
     required this.paths,
@@ -2205,6 +2357,8 @@ class _PreviewPanel extends StatelessWidget {
     required this.dragging,
     required this.onChooseFiles,
     required this.onChooseDirectory,
+    required this.onSaveFileList,
+    required this.onLoadFileList,
     required this.onRemovePath,
     required this.onSetPathIncluded,
     required this.onSetAllPathsIncluded,
@@ -2250,6 +2404,8 @@ class _PreviewPanel extends StatelessWidget {
   final bool dragging;
   final VoidCallback onChooseFiles;
   final VoidCallback onChooseDirectory;
+  final VoidCallback onSaveFileList;
+  final VoidCallback onLoadFileList;
   final ValueChanged<String> onRemovePath;
   final void Function(String path, bool included) onSetPathIncluded;
   final ValueChanged<bool> onSetAllPathsIncluded;
@@ -2362,6 +2518,13 @@ class _PreviewPanel extends StatelessWidget {
                         onPressed: applying || scanning ? null : onClearPaths,
                         child: const Text('全部清除'),
                       ),
+                    const SizedBox(width: 6),
+                    _FileListMenu(
+                      enabled: connected && !applying && !scanning,
+                      canSave: paths.isNotEmpty,
+                      onLoad: onLoadFileList,
+                      onSave: onSaveFileList,
+                    ),
                     const SizedBox(width: 6),
                     _AddItemsMenu(
                       enabled: connected && !applying && !scanning,
@@ -2658,6 +2821,79 @@ class _EmptyPreviewFilter extends StatelessWidget {
           const SizedBox(height: 8),
           TextButton(onPressed: onClear, child: const Text('清除搜尋')),
         ],
+      ),
+    );
+  }
+}
+
+class _FileListMenu extends StatelessWidget {
+  const _FileListMenu({
+    required this.enabled,
+    required this.canSave,
+    required this.onLoad,
+    required this.onSave,
+  });
+
+  final bool enabled;
+  final bool canSave;
+  final VoidCallback onLoad;
+  final VoidCallback onSave;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = enabled ? const Color(0xFFD5D8E1) : muted;
+    return PopupMenuButton<_FileListAction>(
+      key: const ValueKey('file-list-menu'),
+      enabled: enabled,
+      tooltip: '儲存或載入檔案清單',
+      onSelected: (action) {
+        switch (action) {
+          case _FileListAction.load:
+            onLoad();
+          case _FileListAction.save:
+            onSave();
+        }
+      },
+      itemBuilder: (context) => [
+        const PopupMenuItem(
+          key: ValueKey('load-file-list'),
+          value: _FileListAction.load,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.file_open_outlined),
+            title: Text('載入檔案清單'),
+          ),
+        ),
+        PopupMenuItem(
+          key: const ValueKey('save-file-list'),
+          value: _FileListAction.save,
+          enabled: canSave,
+          child: const ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.save_outlined),
+            title: Text('儲存檔案清單'),
+          ),
+        ),
+      ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: enabled ? const Color(0xFF3A4050) : border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.list_alt_rounded, size: 18, color: color),
+            const SizedBox(width: 7),
+            Text(
+              '清單',
+              style: TextStyle(color: color, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(width: 3),
+            Icon(Icons.arrow_drop_down_rounded, size: 18, color: color),
+          ],
+        ),
       ),
     );
   }
@@ -3357,6 +3593,7 @@ String _friendlyError(Object error) {
       _ => error.message,
     };
   }
+  if (error case FormatException(:final message)) return message.toString();
   final text = error.toString();
   const prefix = 'BackendProtocolException: ';
   if (text.startsWith(prefix)) return text.substring(prefix.length);

@@ -3,8 +3,12 @@ import 'dart:io';
 
 import 'package:bridra_flutter/bridra_flutter.dart';
 import 'package:desktop_drop/desktop_drop.dart';
+import 'package:file_selector/file_selector.dart';
+import 'package:file_selector_platform_interface/file_selector_platform_interface.dart'
+    show FileSelectorPlatform;
 import 'package:flick/api/backend_gateway.dart';
 import 'package:flick/app/flick_app.dart';
+import 'package:flick/domain/file_list_io.dart';
 import 'package:flutter/material.dart'
     show
         FilledButton,
@@ -12,6 +16,7 @@ import 'package:flutter/material.dart'
         Offset,
         OutlinedButton,
         Size,
+        Text,
         TextFormField,
         ValueKey;
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
@@ -31,7 +36,7 @@ class FakeBackend implements BackendGateway {
   Future<HealthInfo> health({RpcCancellationToken? cancellationToken}) async {
     return const HealthInfo(
       status: 'ok',
-      frameworkVersion: '0.10.1',
+      frameworkVersion: '0.11.0',
       protocolVersion: 3,
       runtime: 'Go sidecar',
       architecture: 'Middleware -> Controller -> Service',
@@ -154,6 +159,30 @@ class FakeBackend implements BackendGateway {
   }
 }
 
+class FakeFileSelector extends FileSelectorPlatform {
+  XFile? openFileResult;
+  FileSaveLocation? saveLocationResult;
+  var openFileCalls = 0;
+
+  @override
+  Future<XFile?> openFile({
+    List<XTypeGroup>? acceptedTypeGroups,
+    String? initialDirectory,
+    String? confirmButtonText,
+  }) async {
+    openFileCalls++;
+    return openFileResult;
+  }
+
+  @override
+  Future<String?> getSavePath({
+    List<XTypeGroup>? acceptedTypeGroups,
+    String? initialDirectory,
+    String? suggestedName,
+    String? confirmButtonText,
+  }) async => saveLocationResult?.path;
+}
+
 void main() {
   testWidgets('renders the Flick rename workspace', (tester) async {
     SharedPreferences.setMockInitialValues({});
@@ -174,7 +203,7 @@ void main() {
     expect(find.text('v0.2.1 (3)'), findsOneWidget);
     expect(find.text('本機引擎就緒'), findsOneWidget);
     expect(
-      find.byTooltip('Go sidecar · Bridra 0.10.1 · Protocol 3'),
+      find.byTooltip('Go sidecar · Bridra 0.11.0 · Protocol 3'),
       findsOneWidget,
     );
     expect(find.text('改名規則'), findsOneWidget);
@@ -189,6 +218,112 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('加入檔案'), findsOneWidget);
     expect(find.text('加入資料夾'), findsOneWidget);
+    expect(find.byKey(const ValueKey('file-list-menu')), findsOneWidget);
+  });
+
+  testWidgets('saves and restores file list workspace state', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(1280, 820);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final originalSelector = FileSelectorPlatform.instance;
+    final selector = FakeFileSelector();
+    FileSelectorPlatform.instance = selector;
+    addTearDown(() => FileSelectorPlatform.instance = originalSelector);
+    final directory = Directory.systemTemp.createTempSync('flick-widget-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final files = ['one.txt', 'two.txt']
+        .map((name) => File('${directory.path}/$name')..writeAsStringSync(name))
+        .toList(growable: false);
+    final listFile = File('${directory.path}/saved.flicklist');
+    selector.saveLocationResult = FileSaveLocation(listFile.path);
+    final backend = FakeBackend();
+
+    await tester.pumpWidget(FlickApp(connector: () async => backend));
+    await tester.pumpAndSettle();
+    await _dropFiles(
+      tester,
+      files.map((file) => file.path).toList(growable: false),
+      backend,
+    );
+    await _pumpAsyncWork(tester);
+
+    await tester.tap(find.byTooltip('取消納入（這次不改名）').last);
+    await _pumpAsyncWork(tester);
+    await tester.tap(find.byTooltip('點一下直接修改這個檔名').first);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('manual-name-field')),
+      'chosen.txt',
+    );
+    await tester.tap(find.text('套用到預覽'));
+    await _pumpAsyncWork(tester);
+
+    await tester.tap(find.byKey(const ValueKey('file-list-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('save-file-list')));
+    await tester.runAsync(() async {
+      for (
+        var index = 0;
+        index < 50 && (!listFile.existsSync() || listFile.lengthSync() == 0);
+        index++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    });
+    await tester.pumpAndSettle();
+
+    final saved = decodeFlickFileList(listFile.readAsStringSync());
+    expect(
+      saved.items.map((item) => item.path),
+      files.map((file) => file.path),
+    );
+    expect(saved.items.map((item) => item.included), [true, false]);
+    expect(saved.items.map((item) => item.overrideName), ['chosen.txt', null]);
+
+    await tester.tap(find.text('全部清除'));
+    await tester.pump();
+    backend.previewRequests.clear();
+    selector.openFileResult = XFile.fromData(
+      utf8.encode(listFile.readAsStringSync()),
+      name: 'saved.flicklist',
+    );
+    await tester.tap(find.byKey(const ValueKey('file-list-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('載入檔案清單').last);
+    await tester.pump();
+    for (
+      var index = 0;
+      index < 100 && backend.previewRequests.isEmpty;
+      index++
+    ) {
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      });
+      await tester.pump(const Duration(milliseconds: 10));
+    }
+
+    expect(selector.openFileCalls, 1);
+    final visibleText = tester
+        .widgetList<Text>(find.byType(Text))
+        .map((widget) => widget.data)
+        .whereType<String>()
+        .join(' | ');
+    expect(
+      backend.lastPreviewRequest,
+      isNotNull,
+      reason: 'Visible UI text after loading: $visibleText',
+    );
+    expect(
+      backend.lastPreviewRequest?.paths,
+      files.map((file) => file.path).toList(growable: false),
+    );
+    expect(backend.lastPreviewRequest?.excludedPaths, [files[1].path]);
+    expect(backend.lastPreviewRequest?.overridePaths, [files[0].path]);
+    expect(backend.lastPreviewRequest?.overrideNames, ['chosen.txt']);
+    expect(find.text('chosen.txt'), findsOneWidget);
+    expect(find.text('1 已排除'), findsOneWidget);
   });
 
   testWidgets('keeps the empty workspace inside a compact window', (
@@ -206,6 +341,26 @@ void main() {
     expect(find.text('拖放檔案或資料夾到這裡'), findsOneWidget);
     expect(find.text('選擇檔案'), findsOneWidget);
     expect(find.text('選擇資料夾'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('fits file list controls at the minimum desktop width', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(800, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(FlickApp(connector: () async => FakeBackend()));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('檔案預覽'));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('file-list-menu')), findsOneWidget);
+    expect(find.text('清單'), findsOneWidget);
+    expect(find.text('加入'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
