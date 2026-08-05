@@ -4,6 +4,8 @@ All notable changes to Flick are documented in this file.
 
 ## Unreleased
 
+## 0.2.1 - 2026-08-05
+
 ### Added
 
 - Selected-item processing-order controls that immediately recalculate Sequence
