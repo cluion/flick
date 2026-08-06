@@ -4,6 +4,25 @@ All notable changes to Flick are documented in this file.
 
 ## Unreleased
 
+## 0.3.0 - 2026-08-06
+
+### Added
+
+- Save and reload portable `.flicklist` workspace file lists
+- Reveal preview items in the platform file manager, copy their full paths, or
+  remove them directly from the workspace
+- Save, duplicate, rename, delete, import, and export named rule presets
+- Safe starter presets for common numbering, cleanup, camera-prefix, and
+  extension workflows
+- A separate recent-rule configuration history that does not affect filesystem
+  rename undo history
+- Versioned `.flickrecipe` rule-chain files with migration support for legacy
+  unversioned recipes
+
+### Changed
+
+- Upgraded the Bridra Go and Flutter runtimes together from 0.10.1 to 0.11.0
+
 ## 0.2.1 - 2026-08-05
 
 ### Added
