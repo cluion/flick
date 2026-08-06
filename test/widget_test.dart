@@ -10,6 +10,7 @@ import 'package:flick/api/backend_gateway.dart';
 import 'package:flick/app/flick_app.dart';
 import 'package:flick/domain/file_list_io.dart';
 import 'package:flick/domain/rename_rule.dart';
+import 'package:flick/domain/rule_configuration_history.dart';
 import 'package:flick/domain/rule_preset.dart';
 import 'package:flutter/gestures.dart'
     show PointerDeviceKind, kSecondaryMouseButton;
@@ -451,6 +452,68 @@ void main() {
       RenameRuleType.suffix,
       RenameRuleType.sequence,
     ]);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('browses, applies, and clears recent rule configurations', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(800, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(FlickApp(connector: () async => FakeBackend()));
+    await tester.pumpAndSettle();
+    final ruleField = find.byType(TextFormField).first;
+    await tester.enterText(ruleField, 'holiday-{n}');
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump();
+    await tester.enterText(ruleField, 'work-{n}');
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump();
+
+    final stored = await SharedPreferencesAsync().getString(
+      'flick.rule-history.v1',
+    );
+    final history = decodeRuleConfigurationHistory(stored!);
+    expect(history, hasLength(2));
+    expect(history.first.rules.single.value, 'work-{n}');
+    final holiday = history.last;
+
+    await tester.tap(find.byKey(const ValueKey('rule-presets-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('recent-rule-configurations')));
+    await tester.pumpAndSettle();
+    expect(find.text('最近使用的規則'), findsOneWidget);
+    expect(find.text('設定新檔名：work-{n}'), findsOneWidget);
+    expect(find.text('設定新檔名：holiday-{n}'), findsOneWidget);
+    await tester.tap(
+      find.byKey(ValueKey('apply-recent-rule-configuration-${holiday.id}')),
+    );
+    await tester.pumpAndSettle();
+
+    final restoredField = find.byType(TextFormField).first;
+    final restoredEditor = tester.widget<EditableText>(
+      find.descendant(of: restoredField, matching: find.byType(EditableText)),
+    );
+    expect(restoredEditor.controller.text, 'holiday-{n}');
+    expect(find.text('已套用最近的規則設定'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('rule-presets-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('recent-rule-configurations')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('clear-rule-history')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('confirm-clear-rule-history')));
+    await tester.pumpAndSettle();
+    expect(find.text('尚無最近規則設定'), findsOneWidget);
+    final cleared = await SharedPreferencesAsync().getString(
+      'flick.rule-history.v1',
+    );
+    expect(decodeRuleConfigurationHistory(cleared!), isEmpty);
     expect(tester.takeException(), isNull);
   });
 

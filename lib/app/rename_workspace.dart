@@ -15,6 +15,7 @@ import '../domain/directory_import_options.dart';
 import '../domain/file_list_io.dart';
 import '../domain/preview_list_options.dart';
 import '../domain/rename_list_io.dart';
+import '../domain/rule_configuration_history.dart';
 import '../domain/rename_rule.dart';
 import '../domain/rule_preset.dart';
 import '../platform/file_actions.dart';
@@ -22,6 +23,7 @@ import 'flick_app.dart';
 
 const _savedRulesKey = 'flick.rename-rules.v2';
 const _savedRulePresetsKey = 'flick.rule-presets.v1';
+const _savedRuleHistoryKey = 'flick.rule-history.v1';
 const _maxRulePresetFileBytes = 5 * 1024 * 1024;
 const _maxRenameItems = 10000;
 const _previewRowExtent = 65.0;
@@ -62,8 +64,11 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
       TextEditingController();
   List<RenameRule> _rules = [RenameRule.create(RenameRuleType.newName)];
   List<RulePreset> _rulePresets = const [];
+  List<RuleConfigurationSnapshot> _ruleHistory = const [];
   Future<void> _rulePresetSaveQueue = Future.value();
+  Future<void> _ruleHistorySaveQueue = Future.value();
   Timer? _previewTimer;
+  Timer? _ruleHistoryTimer;
   Object? _error;
   String? _notice;
   var _connecting = true;
@@ -131,6 +136,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
 
     List<RenameRule>? rules;
     List<RulePreset>? presets;
+    List<RuleConfigurationSnapshot>? ruleHistory;
     try {
       final saved = await preferences.getString(_savedRulesKey);
       if (saved != null) rules = decodeSavedRules(saved);
@@ -143,10 +149,19 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     } on Object {
       // A damaged preset snapshot must not block current-rule restoration.
     }
+    try {
+      final saved = await preferences.getString(_savedRuleHistoryKey);
+      if (saved != null) {
+        ruleHistory = decodeRuleConfigurationHistory(saved);
+      }
+    } on Object {
+      // A damaged rule-history snapshot must not block other preferences.
+    }
     if (!mounted) return;
     setState(() {
       if (rules != null && rules.isNotEmpty) _rules = rules;
       if (presets != null) _rulePresets = presets;
+      if (ruleHistory case final history?) _ruleHistory = history;
     });
   }
 
@@ -170,6 +185,19 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
       }
     });
     await _rulePresetSaveQueue;
+  }
+
+  Future<void> _saveRuleHistory() async {
+    final encoded = encodeRuleConfigurationHistory(_ruleHistory);
+    _ruleHistorySaveQueue = _ruleHistorySaveQueue.then((_) async {
+      try {
+        final preferences = SharedPreferencesAsync();
+        await preferences.setString(_savedRuleHistoryKey, encoded);
+      } on Object {
+        // Rule editing remains available if preference storage is unavailable.
+      }
+    });
+    await _ruleHistorySaveQueue;
   }
 
   Future<void> _chooseFiles() async {
@@ -884,9 +912,12 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
       context: context,
       builder: (context) => _RulePresetManagerDialog(
         initialPresets: _rulePresets,
+        initialRuleHistory: _ruleHistory,
         currentRules: _rules,
         onPresetsChanged: _replaceRulePresets,
         onApply: _applyRulePreset,
+        onRuleHistoryChanged: _replaceRuleHistory,
+        onApplyRecent: _applyRecentRuleConfiguration,
       ),
     );
   }
@@ -897,6 +928,13 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     unawaited(_saveRulePresets());
   }
 
+  void _replaceRuleHistory(List<RuleConfigurationSnapshot> history) {
+    if (!mounted) return;
+    if (history.isEmpty) _ruleHistoryTimer?.cancel();
+    setState(() => _ruleHistory = List.unmodifiable(history));
+    unawaited(_saveRuleHistory());
+  }
+
   void _applyRulePreset(RulePreset preset) {
     setState(() {
       _rules = preset.instantiateRules();
@@ -905,6 +943,18 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     });
     unawaited(_saveRules());
     _schedulePreview(immediate: true);
+    _scheduleRuleHistorySnapshot(immediate: true);
+  }
+
+  void _applyRecentRuleConfiguration(RuleConfigurationSnapshot snapshot) {
+    setState(() {
+      _rules = snapshot.instantiateRules();
+      _notice = '已套用最近的規則設定';
+      _error = null;
+    });
+    unawaited(_saveRules());
+    _schedulePreview(immediate: true);
+    _scheduleRuleHistorySnapshot(immediate: true);
   }
 
   void _updateRule(int index, RenameRule rule) {
@@ -915,6 +965,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     });
     unawaited(_saveRules());
     _schedulePreview();
+    _scheduleRuleHistorySnapshot();
   }
 
   void _addRule(RenameRuleType type) {
@@ -923,6 +974,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     });
     unawaited(_saveRules());
     _schedulePreview();
+    _scheduleRuleHistorySnapshot();
   }
 
   void _removeRule(int index) {
@@ -931,6 +983,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     });
     unawaited(_saveRules());
     _schedulePreview();
+    _scheduleRuleHistorySnapshot();
   }
 
   void _reorderRule(int oldIndex, int newIndex) {
@@ -940,6 +993,29 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     setState(() => _rules = List.unmodifiable(rules));
     unawaited(_saveRules());
     _schedulePreview();
+    _scheduleRuleHistorySnapshot();
+  }
+
+  void _scheduleRuleHistorySnapshot({bool immediate = false}) {
+    _ruleHistoryTimer?.cancel();
+    if (immediate) {
+      _recordRuleHistorySnapshot();
+      return;
+    }
+    _ruleHistoryTimer = Timer(const Duration(seconds: 1), () {
+      _ruleHistoryTimer = null;
+      _recordRuleHistorySnapshot();
+    });
+  }
+
+  void _recordRuleHistorySnapshot() {
+    final updated = recordRecentRuleConfiguration(
+      history: _ruleHistory,
+      rules: _rules,
+    );
+    if (identical(updated, _ruleHistory)) return;
+    setState(() => _ruleHistory = updated);
+    unawaited(_saveRuleHistory());
   }
 
   void _schedulePreview({bool immediate = false}) {
@@ -1136,6 +1212,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   @override
   void dispose() {
     _previewTimer?.cancel();
+    _ruleHistoryTimer?.cancel();
     _previewFocusNode.dispose();
     _previewScrollController.dispose();
     _previewSearchController.dispose();
@@ -1575,15 +1652,21 @@ enum _RulePresetAction { rename, duplicate, export, delete }
 class _RulePresetManagerDialog extends StatefulWidget {
   const _RulePresetManagerDialog({
     required this.initialPresets,
+    required this.initialRuleHistory,
     required this.currentRules,
     required this.onPresetsChanged,
     required this.onApply,
+    required this.onRuleHistoryChanged,
+    required this.onApplyRecent,
   });
 
   final List<RulePreset> initialPresets;
+  final List<RuleConfigurationSnapshot> initialRuleHistory;
   final List<RenameRule> currentRules;
   final ValueChanged<List<RulePreset>> onPresetsChanged;
   final ValueChanged<RulePreset> onApply;
+  final ValueChanged<List<RuleConfigurationSnapshot>> onRuleHistoryChanged;
+  final ValueChanged<RuleConfigurationSnapshot> onApplyRecent;
 
   @override
   State<_RulePresetManagerDialog> createState() =>
@@ -1592,6 +1675,9 @@ class _RulePresetManagerDialog extends StatefulWidget {
 
 class _RulePresetManagerDialogState extends State<_RulePresetManagerDialog> {
   late List<RulePreset> _presets = List.of(widget.initialPresets);
+  late List<RuleConfigurationSnapshot> _ruleHistory = List.of(
+    widget.initialRuleHistory,
+  );
   var _transferring = false;
   String? _transferError;
   String? _transferNotice;
@@ -1652,6 +1738,22 @@ class _RulePresetManagerDialogState extends State<_RulePresetManagerDialog> {
       RulePreset.create(name: name, rules: starter.rules),
     ]);
     setState(() => _transferNotice = '已將內建範本「$name」加入我的預設');
+  }
+
+  Future<void> _showRecentRuleConfigurations() async {
+    final snapshot = await showDialog<RuleConfigurationSnapshot>(
+      context: context,
+      builder: (context) => _RecentRuleConfigurationsDialog(
+        initialHistory: _ruleHistory,
+        onHistoryChanged: (history) {
+          _ruleHistory = List.unmodifiable(history);
+          widget.onRuleHistoryChanged(_ruleHistory);
+        },
+      ),
+    );
+    if (snapshot == null || !mounted) return;
+    widget.onApplyRecent(snapshot);
+    Navigator.pop(context);
   }
 
   Future<void> _handleAction(
@@ -1826,8 +1928,8 @@ class _RulePresetManagerDialogState extends State<_RulePresetManagerDialog> {
   @override
   Widget build(BuildContext context) {
     final maxListHeight = math.min(
-      360.0,
-      MediaQuery.sizeOf(context).height * 0.48,
+      300.0,
+      MediaQuery.sizeOf(context).height * 0.38,
     );
     return AlertDialog(
       backgroundColor: surfaceRaised,
@@ -1864,6 +1966,14 @@ class _RulePresetManagerDialogState extends State<_RulePresetManagerDialog> {
                   onPressed: _transferring ? null : _showStarterRulePresets,
                   icon: const Icon(Icons.auto_awesome_outlined, size: 18),
                   label: const Text('內建範本'),
+                ),
+                OutlinedButton.icon(
+                  key: const ValueKey('recent-rule-configurations'),
+                  onPressed: _transferring
+                      ? null
+                      : _showRecentRuleConfigurations,
+                  icon: const Icon(Icons.history_rounded, size: 18),
+                  label: const Text('最近使用'),
                 ),
                 OutlinedButton.icon(
                   key: const ValueKey('export-all-rule-presets'),
@@ -2005,6 +2115,198 @@ class _RulePresetManagerDialogState extends State<_RulePresetManagerDialog> {
       ],
     );
   }
+}
+
+class _RecentRuleConfigurationsDialog extends StatefulWidget {
+  const _RecentRuleConfigurationsDialog({
+    required this.initialHistory,
+    required this.onHistoryChanged,
+  });
+
+  final List<RuleConfigurationSnapshot> initialHistory;
+  final ValueChanged<List<RuleConfigurationSnapshot>> onHistoryChanged;
+
+  @override
+  State<_RecentRuleConfigurationsDialog> createState() =>
+      _RecentRuleConfigurationsDialogState();
+}
+
+class _RecentRuleConfigurationsDialogState
+    extends State<_RecentRuleConfigurationsDialog> {
+  late List<RuleConfigurationSnapshot> _history = List.of(
+    widget.initialHistory,
+  );
+
+  Future<void> _clearHistory() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: surfaceRaised,
+        title: const Text('清除最近規則設定？'),
+        content: const Text('只會清除規則設定快照，不會影響預設或檔案改名復原紀錄。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const ValueKey('confirm-clear-rule-history'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('清除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _history = const []);
+    widget.onHistoryChanged(const []);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final maxListHeight = math.min(
+      380.0,
+      MediaQuery.sizeOf(context).height * 0.52,
+    );
+    return AlertDialog(
+      backgroundColor: surfaceRaised,
+      title: const Text('最近使用的規則'),
+      content: SizedBox(
+        width: 500,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              '停止編輯約 1 秒後自動記錄；相同設定會去重，最多保留 20 筆。這裡不包含檔案改名復原紀錄。',
+              style: TextStyle(color: subtle, fontSize: 13),
+            ),
+            const SizedBox(height: 14),
+            if (_history.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 34),
+                child: Column(
+                  children: [
+                    Icon(Icons.history_rounded, color: subtle, size: 34),
+                    SizedBox(height: 10),
+                    Text('尚無最近規則設定', style: TextStyle(color: subtle)),
+                  ],
+                ),
+              )
+            else
+              ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: maxListHeight),
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: _history.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 8),
+                  itemBuilder: (context, index) {
+                    final snapshot = _history[index];
+                    return Container(
+                      key: ValueKey('recent-rule-configuration-${snapshot.id}'),
+                      decoration: BoxDecoration(
+                        color: surface,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: border),
+                      ),
+                      padding: const EdgeInsets.fromLTRB(13, 10, 8, 10),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.history_rounded,
+                            color: primaryBright,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  _ruleConfigurationDescription(snapshot.rules),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  '${snapshot.rules.length} 個規則 · ${_formatRuleHistoryTime(snapshot.savedAt)}',
+                                  style: const TextStyle(
+                                    color: subtle,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          TextButton(
+                            key: ValueKey(
+                              'apply-recent-rule-configuration-${snapshot.id}',
+                            ),
+                            onPressed: () => Navigator.pop(context, snapshot),
+                            child: const Text('套用'),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          key: const ValueKey('clear-rule-history'),
+          onPressed: _history.isEmpty ? null : _clearHistory,
+          child: const Text('清除記錄'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('完成'),
+        ),
+      ],
+    );
+  }
+}
+
+String _ruleConfigurationDescription(List<RenameRule> rules) {
+  final descriptions = rules.take(3).map(_renameRuleDescription).toList();
+  if (rules.length > descriptions.length) descriptions.add('…');
+  return descriptions.join(' → ');
+}
+
+String _renameRuleDescription(RenameRule rule) {
+  return switch (rule.type) {
+    RenameRuleType.newName => '設定新檔名：${rule.value}',
+    RenameRuleType.list => '名稱清單：${rule.values.length} 個名稱',
+    RenameRuleType.replace =>
+      rule.replacement.isEmpty
+          ? '刪除文字：${rule.value}'
+          : '取代：${rule.value} → ${rule.replacement}',
+    RenameRuleType.prefix => '前綴：${rule.value}',
+    RenameRuleType.suffix => '後綴：${rule.value}',
+    RenameRuleType.letterCase =>
+      '${rule.target.label}${switch (rule.mode) {
+        'upper' => '轉大寫',
+        'title' => '轉標題格式',
+        _ => '轉小寫',
+      }}',
+    RenameRuleType.sequence =>
+      '流水號：${rule.start.toString().padLeft(rule.padding, '0')} 起',
+    RenameRuleType.trim => '清除${rule.target.label}頭尾空白',
+  };
+}
+
+String _formatRuleHistoryTime(DateTime savedAt) {
+  final local = savedAt.toLocal();
+  String twoDigits(int value) => value.toString().padLeft(2, '0');
+  return '${local.year}/${twoDigits(local.month)}/${twoDigits(local.day)} '
+      '${twoDigits(local.hour)}:${twoDigits(local.minute)}';
 }
 
 class _StarterRulePresetDialog extends StatelessWidget {
