@@ -1636,6 +1636,24 @@ class _RulePresetManagerDialogState extends State<_RulePresetManagerDialog> {
     ]);
   }
 
+  Future<void> _showStarterRulePresets() async {
+    final starter = await showDialog<StarterRulePreset>(
+      context: context,
+      builder: (context) => const _StarterRulePresetDialog(),
+    );
+    if (starter == null || !mounted) return;
+    if (_presets.length >= maxRulePresetCount) {
+      setState(() => _transferError = '規則預設已達 1000 個的上限');
+      return;
+    }
+    final name = _availablePresetName(starter.name);
+    _replacePresets([
+      ..._presets,
+      RulePreset.create(name: name, rules: starter.rules),
+    ]);
+    setState(() => _transferNotice = '已將內建範本「$name」加入我的預設');
+  }
+
   Future<void> _handleAction(
     RulePreset preset,
     _RulePresetAction action,
@@ -1790,6 +1808,16 @@ class _RulePresetManagerDialogState extends State<_RulePresetManagerDialog> {
     return '$base $suffix';
   }
 
+  String _availablePresetName(String name) {
+    final existing = _existingNames();
+    if (!existing.contains(name.toLowerCase())) return name;
+    var suffix = 2;
+    while (existing.contains('$name $suffix'.toLowerCase())) {
+      suffix++;
+    }
+    return '$name $suffix';
+  }
+
   void _apply(RulePreset preset) {
     widget.onApply(preset);
     Navigator.pop(context);
@@ -1830,6 +1858,12 @@ class _RulePresetManagerDialogState extends State<_RulePresetManagerDialog> {
                   onPressed: _transferring ? null : _importPresets,
                   icon: const Icon(Icons.file_download_outlined, size: 18),
                   label: const Text('匯入'),
+                ),
+                OutlinedButton.icon(
+                  key: const ValueKey('starter-rule-presets'),
+                  onPressed: _transferring ? null : _showStarterRulePresets,
+                  icon: const Icon(Icons.auto_awesome_outlined, size: 18),
+                  label: const Text('內建範本'),
                 ),
                 OutlinedButton.icon(
                   key: const ValueKey('export-all-rule-presets'),
@@ -1967,6 +2001,101 @@ class _RulePresetManagerDialogState extends State<_RulePresetManagerDialog> {
         TextButton(
           onPressed: () => Navigator.pop(context),
           child: const Text('完成'),
+        ),
+      ],
+    );
+  }
+}
+
+class _StarterRulePresetDialog extends StatelessWidget {
+  const _StarterRulePresetDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    final maxListHeight = math.min(
+      380.0,
+      MediaQuery.sizeOf(context).height * 0.52,
+    );
+    return AlertDialog(
+      backgroundColor: surfaceRaised,
+      title: const Text('內建安全範本'),
+      content: SizedBox(
+        width: 500,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              '範本只會在你選擇後加入「我的預設」，不會自動修改檔案。',
+              style: TextStyle(color: subtle, fontSize: 13),
+            ),
+            const SizedBox(height: 14),
+            ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: maxListHeight),
+              child: ListView.separated(
+                shrinkWrap: true,
+                itemCount: starterRulePresets.length,
+                separatorBuilder: (_, _) => const SizedBox(height: 8),
+                itemBuilder: (context, index) {
+                  final starter = starterRulePresets[index];
+                  return Container(
+                    decoration: BoxDecoration(
+                      color: surface,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: border),
+                    ),
+                    padding: const EdgeInsets.fromLTRB(13, 10, 8, 10),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.auto_awesome_outlined,
+                          color: primaryBright,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                starter.name,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                starter.description,
+                                style: const TextStyle(
+                                  color: subtle,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton(
+                          key: ValueKey(
+                            'add-starter-rule-preset-${starter.id}',
+                          ),
+                          onPressed: () => Navigator.pop(context, starter),
+                          child: const Text('加入'),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
         ),
       ],
     );

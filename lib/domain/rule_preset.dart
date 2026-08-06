@@ -5,6 +5,81 @@ import 'rename_rule.dart';
 const currentRulePresetSchemaVersion = 1;
 const maxRulePresetCount = 1000;
 
+class StarterRulePreset {
+  const StarterRulePreset({
+    required this.id,
+    required this.name,
+    required this.description,
+    required this.rules,
+  });
+
+  final String id;
+  final String name;
+  final String description;
+  final List<RenameRule> rules;
+}
+
+const starterRulePresets = <StarterRulePreset>[
+  StarterRulePreset(
+    id: 'numbered',
+    name: '加上兩位流水號',
+    description: '在主檔名後加入 -01、-02，副檔名保持不變',
+    rules: [
+      RenameRule(
+        id: 'numbered-separator',
+        type: RenameRuleType.suffix,
+        value: '-',
+      ),
+      RenameRule(
+        id: 'numbered-sequence',
+        type: RenameRuleType.sequence,
+        start: 1,
+        padding: 2,
+      ),
+    ],
+  ),
+  StarterRulePreset(
+    id: 'clean-lowercase',
+    name: '清理空白並轉小寫',
+    description: '移除主檔名頭尾空白，再將英文字母統一為小寫',
+    rules: [
+      RenameRule(id: 'clean-trim', type: RenameRuleType.trim),
+      RenameRule(
+        id: 'clean-lowercase',
+        type: RenameRuleType.letterCase,
+        mode: 'lower',
+      ),
+    ],
+  ),
+  StarterRulePreset(
+    id: 'camera-prefix',
+    name: '移除常見相機前綴',
+    description: '移除 IMG_、DSC_、PXL_ 開頭；其他檔名不受影響',
+    rules: [
+      RenameRule(
+        id: 'camera-prefix-replace',
+        type: RenameRuleType.replace,
+        value: r'^(IMG_|DSC_|PXL_)',
+        caseSensitive: false,
+        useRegex: true,
+      ),
+    ],
+  ),
+  StarterRulePreset(
+    id: 'lowercase-extension',
+    name: '副檔名轉小寫',
+    description: '只統一副檔名大小寫，例如 JPG 轉為 jpg',
+    rules: [
+      RenameRule(
+        id: 'lowercase-extension',
+        type: RenameRuleType.letterCase,
+        mode: 'lower',
+        target: RenameRuleTarget.extension,
+      ),
+    ],
+  ),
+];
+
 class RulePreset {
   RulePreset({
     required this.id,

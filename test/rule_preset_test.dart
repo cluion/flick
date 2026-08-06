@@ -5,6 +5,33 @@ import 'package:flick/domain/rule_preset.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('starter presets are unique, complete, and safe to preview', () {
+    expect(starterRulePresets, hasLength(4));
+    expect(
+      starterRulePresets.map((preset) => preset.id).toSet(),
+      hasLength(starterRulePresets.length),
+    );
+    expect(
+      starterRulePresets.map((preset) => preset.name.toLowerCase()).toSet(),
+      hasLength(starterRulePresets.length),
+    );
+    for (final starter in starterRulePresets) {
+      expect(starter.rules, isNotEmpty);
+      expect(starter.rules.every((rule) => rule.isComplete), isTrue);
+      final recipe = jsonDecode(encodeRenameRecipe(starter.rules)) as Map;
+      final rules = recipe['rules'] as List;
+      expect(rules.every((rule) => (rule as Map)['enabled'] == true), isTrue);
+    }
+
+    final numbered = starterRulePresets.first;
+    expect(numbered.rules.map((rule) => rule.type), [
+      RenameRuleType.suffix,
+      RenameRuleType.sequence,
+    ]);
+    expect(numbered.rules.first.value, '-');
+    expect(numbered.rules.last.padding, 2);
+  });
+
   test('presets round-trip rules and schema version', () {
     final preset = RulePreset(
       id: 'photos',

@@ -413,6 +413,47 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('adds a safe built-in template to personal presets', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(800, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(FlickApp(connector: () async => FakeBackend()));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('rule-presets-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('starter-rule-presets')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('內建安全範本'), findsOneWidget);
+    expect(find.text('加上兩位流水號'), findsOneWidget);
+    expect(find.text('清理空白並轉小寫'), findsOneWidget);
+    expect(find.text('移除常見相機前綴'), findsOneWidget);
+    expect(find.text('副檔名轉小寫'), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('add-starter-rule-preset-numbered')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('加上兩位流水號'), findsOneWidget);
+    expect(find.text('2 個規則'), findsOneWidget);
+    expect(find.text('已將內建範本「加上兩位流水號」加入我的預設'), findsOneWidget);
+    final stored = await SharedPreferencesAsync().getString(
+      'flick.rule-presets.v1',
+    );
+    final preset = decodeRulePresets(stored!).single;
+    expect(preset.name, '加上兩位流水號');
+    expect(preset.rules.map((rule) => rule.type), [
+      RenameRuleType.suffix,
+      RenameRuleType.sequence,
+    ]);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('saves and restores file list workspace state', (tester) async {
     SharedPreferences.setMockInitialValues({});
     tester.view.physicalSize = const Size(1280, 820);
