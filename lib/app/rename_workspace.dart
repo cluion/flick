@@ -372,7 +372,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
         _previewFailed = false;
         _previewPending = false;
         _notice =
-            '已從 ${file.name} 載入 ${availableItems.length} 個檔案'
+            '已從 ${_fileNameFromPath(file.path)} 載入 ${availableItems.length} 個檔案'
             '${unavailableCount == 0 ? '' : '，略過 $unavailableCount 個無法使用的項目'}';
         _error = null;
       });
@@ -395,7 +395,8 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
         confirmButtonText: '載入名稱',
       );
       if (file == null || !mounted) return;
-      final isCsv = file.name.toLowerCase().endsWith('.csv');
+      final fileName = _fileNameFromPath(file.path);
+      final isCsv = fileName.toLowerCase().endsWith('.csv');
       final values = decodeRenameListFile(
         content: await file.readAsString(),
         csv: isCsv,
@@ -412,7 +413,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
       );
       setState(() {
         _notice =
-            '已從 ${file.name} 載入 ${values.length} 個名稱'
+            '已從 $fileName 載入 ${values.length} 個名稱'
             '${isCsv ? '，套用到主檔名與副檔名' : ''}';
         _error = null;
       });
@@ -975,7 +976,8 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
       if (replace != true || !mounted) return;
       setState(() {
         _rules = recipe.rules;
-        _notice = '已從 ${file.name} 載入 ${recipe.rules.length} 個規則';
+        _notice =
+            '已從 ${_fileNameFromPath(file.path)} 載入 ${recipe.rules.length} 個規則';
         _error = null;
       });
       unawaited(_saveRules());
@@ -1930,7 +1932,8 @@ class _RulePresetManagerDialogState extends State<_RulePresetManagerDialog> {
       );
       _replacePresets(merged);
       setState(() {
-        _transferNotice = '已從 ${file.name} 匯入 ${imported.length} 個預設';
+        _transferNotice =
+            '已從 ${_fileNameFromPath(file.path)} 匯入 ${imported.length} 個預設';
       });
     } on Object catch (error) {
       if (mounted) setState(() => _transferError = _transferErrorText(error));
