@@ -16,10 +16,12 @@ import '../domain/file_list_io.dart';
 import '../domain/preview_list_options.dart';
 import '../domain/rename_list_io.dart';
 import '../domain/rename_rule.dart';
+import '../domain/rule_preset.dart';
 import '../platform/file_actions.dart';
 import 'flick_app.dart';
 
 const _savedRulesKey = 'flick.rename-rules.v2';
+const _savedRulePresetsKey = 'flick.rule-presets.v1';
 const _maxRenameItems = 10000;
 const _previewRowExtent = 65.0;
 
@@ -58,6 +60,8 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   final TextEditingController _previewSearchController =
       TextEditingController();
   List<RenameRule> _rules = [RenameRule.create(RenameRuleType.newName)];
+  List<RulePreset> _rulePresets = const [];
+  Future<void> _rulePresetSaveQueue = Future.value();
   Timer? _previewTimer;
   Object? _error;
   String? _notice;
@@ -93,7 +97,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   }
 
   Future<void> _bootstrap() async {
-    await _restoreRules();
+    await _restoreRulePreferences();
     BackendGateway? backend;
     try {
       backend = await widget.connector();
@@ -116,16 +120,33 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     }
   }
 
-  Future<void> _restoreRules() async {
+  Future<void> _restoreRulePreferences() async {
+    late final SharedPreferencesAsync preferences;
     try {
-      final preferences = SharedPreferencesAsync();
-      final saved = await preferences.getString(_savedRulesKey);
-      if (saved == null) return;
-      final rules = decodeSavedRules(saved);
-      if (rules.isNotEmpty && mounted) setState(() => _rules = rules);
+      preferences = SharedPreferencesAsync();
     } on Object {
-      // Presets are optional and must never block the workspace.
+      return;
     }
+
+    List<RenameRule>? rules;
+    List<RulePreset>? presets;
+    try {
+      final saved = await preferences.getString(_savedRulesKey);
+      if (saved != null) rules = decodeSavedRules(saved);
+    } on Object {
+      // A damaged current-rule snapshot must not block saved presets.
+    }
+    try {
+      final saved = await preferences.getString(_savedRulePresetsKey);
+      if (saved != null) presets = decodeRulePresets(saved);
+    } on Object {
+      // A damaged preset snapshot must not block current-rule restoration.
+    }
+    if (!mounted) return;
+    setState(() {
+      if (rules != null && rules.isNotEmpty) _rules = rules;
+      if (presets != null) _rulePresets = presets;
+    });
   }
 
   Future<void> _saveRules() async {
@@ -135,6 +156,19 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     } on Object {
       // Preview and rename remain available if preference storage is unavailable.
     }
+  }
+
+  Future<void> _saveRulePresets() async {
+    final encoded = encodeRulePresets(_rulePresets);
+    _rulePresetSaveQueue = _rulePresetSaveQueue.then((_) async {
+      try {
+        final preferences = SharedPreferencesAsync();
+        await preferences.setString(_savedRulePresetsKey, encoded);
+      } on Object {
+        // Rule editing remains available if preference storage is unavailable.
+      }
+    });
+    await _rulePresetSaveQueue;
   }
 
   Future<void> _chooseFiles() async {
@@ -844,6 +878,34 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     _previewFocusNode.requestFocus();
   }
 
+  Future<void> _showRulePresets() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => _RulePresetManagerDialog(
+        initialPresets: _rulePresets,
+        currentRules: _rules,
+        onPresetsChanged: _replaceRulePresets,
+        onApply: _applyRulePreset,
+      ),
+    );
+  }
+
+  void _replaceRulePresets(List<RulePreset> presets) {
+    if (!mounted) return;
+    setState(() => _rulePresets = List.unmodifiable(presets));
+    unawaited(_saveRulePresets());
+  }
+
+  void _applyRulePreset(RulePreset preset) {
+    setState(() {
+      _rules = preset.instantiateRules();
+      _notice = '已套用規則預設「${preset.name}」';
+      _error = null;
+    });
+    unawaited(_saveRules());
+    _schedulePreview(immediate: true);
+  }
+
   void _updateRule(int index, RenameRule rule) {
     final rules = [..._rules]..[index] = rule;
     setState(() {
@@ -1118,6 +1180,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                   builder: (context, constraints) {
                     final rules = _RulesPanel(
                       rules: _rules,
+                      presetCount: _rulePresets.length,
                       currentNames:
                           _plan != null &&
                               listEquals(_plan!.sourcePaths, _paths)
@@ -1130,6 +1193,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                           _plan != null &&
                           listEquals(_plan!.sourcePaths, _paths),
                       onAdd: _addRule,
+                      onManagePresets: _showRulePresets,
                       onUpdate: _updateRule,
                       onLoadList: _loadListRule,
                       onExportMapping: _exportRenameMapping,
@@ -1505,13 +1569,369 @@ class _MessageBar extends StatelessWidget {
   }
 }
 
+enum _RulePresetAction { rename, duplicate, delete }
+
+class _RulePresetManagerDialog extends StatefulWidget {
+  const _RulePresetManagerDialog({
+    required this.initialPresets,
+    required this.currentRules,
+    required this.onPresetsChanged,
+    required this.onApply,
+  });
+
+  final List<RulePreset> initialPresets;
+  final List<RenameRule> currentRules;
+  final ValueChanged<List<RulePreset>> onPresetsChanged;
+  final ValueChanged<RulePreset> onApply;
+
+  @override
+  State<_RulePresetManagerDialog> createState() =>
+      _RulePresetManagerDialogState();
+}
+
+class _RulePresetManagerDialogState extends State<_RulePresetManagerDialog> {
+  late List<RulePreset> _presets = List.of(widget.initialPresets);
+
+  Set<String> _existingNames({String? exceptPresetId}) => {
+    for (final preset in _presets)
+      if (preset.id != exceptPresetId) preset.name.toLowerCase(),
+  };
+
+  Future<String?> _askForName({
+    required String title,
+    required String actionLabel,
+    String initialName = '',
+    String? exceptPresetId,
+  }) {
+    return showDialog<String>(
+      context: context,
+      builder: (context) => _RulePresetNameDialog(
+        title: title,
+        actionLabel: actionLabel,
+        initialName: initialName,
+        existingNames: _existingNames(exceptPresetId: exceptPresetId),
+      ),
+    );
+  }
+
+  void _replacePresets(List<RulePreset> presets) {
+    final immutable = List<RulePreset>.unmodifiable(presets);
+    setState(() => _presets = immutable);
+    widget.onPresetsChanged(immutable);
+  }
+
+  Future<void> _saveCurrentRules() async {
+    final name = await _askForName(title: '儲存規則預設', actionLabel: '儲存');
+    if (name == null || !mounted) return;
+    _replacePresets([
+      ..._presets,
+      RulePreset.create(name: name, rules: widget.currentRules),
+    ]);
+  }
+
+  Future<void> _handleAction(
+    RulePreset preset,
+    _RulePresetAction action,
+  ) async {
+    switch (action) {
+      case _RulePresetAction.rename:
+        final name = await _askForName(
+          title: '重新命名預設',
+          actionLabel: '重新命名',
+          initialName: preset.name,
+          exceptPresetId: preset.id,
+        );
+        if (name == null || !mounted) return;
+        _replacePresets([
+          for (final item in _presets)
+            if (item.id == preset.id) item.copyWith(name: name) else item,
+        ]);
+        return;
+      case _RulePresetAction.duplicate:
+        final name = await _askForName(
+          title: '複製規則預設',
+          actionLabel: '複製',
+          initialName: _availableCopyName(preset.name),
+        );
+        if (name == null || !mounted) return;
+        final index = _presets.indexWhere((item) => item.id == preset.id);
+        final copy = RulePreset.create(name: name, rules: preset.rules);
+        final presets = [..._presets]..insert(index + 1, copy);
+        _replacePresets(presets);
+        return;
+      case _RulePresetAction.delete:
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            backgroundColor: surfaceRaised,
+            title: const Text('刪除規則預設？'),
+            content: Text('「${preset.name}」會從這台裝置永久刪除。'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                key: const ValueKey('confirm-delete-rule-preset'),
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('刪除'),
+              ),
+            ],
+          ),
+        );
+        if (confirmed != true || !mounted) return;
+        _replacePresets([
+          for (final item in _presets)
+            if (item.id != preset.id) item,
+        ]);
+        return;
+    }
+  }
+
+  String _availableCopyName(String name) {
+    final existing = _existingNames();
+    final base = '$name 複本';
+    if (!existing.contains(base.toLowerCase())) return base;
+    var suffix = 2;
+    while (existing.contains('$base $suffix'.toLowerCase())) {
+      suffix++;
+    }
+    return '$base $suffix';
+  }
+
+  void _apply(RulePreset preset) {
+    widget.onApply(preset);
+    Navigator.pop(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final maxListHeight = math.min(
+      360.0,
+      MediaQuery.sizeOf(context).height * 0.48,
+    );
+    return AlertDialog(
+      backgroundColor: surfaceRaised,
+      title: const Text('規則預設'),
+      content: SizedBox(
+        width: 500,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              '儲存常用的規則組合，之後可一鍵套用。上次使用的規則仍會另外自動還原。',
+              style: TextStyle(color: subtle, fontSize: 13),
+            ),
+            const SizedBox(height: 14),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: FilledButton.icon(
+                key: const ValueKey('save-current-rule-preset'),
+                onPressed: _saveCurrentRules,
+                icon: const Icon(Icons.bookmark_add_outlined, size: 18),
+                label: const Text('儲存目前規則'),
+              ),
+            ),
+            const SizedBox(height: 14),
+            const Divider(height: 1),
+            if (_presets.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 34),
+                child: Column(
+                  children: [
+                    Icon(Icons.bookmarks_outlined, color: subtle, size: 34),
+                    SizedBox(height: 10),
+                    Text('尚未建立規則預設', style: TextStyle(color: subtle)),
+                  ],
+                ),
+              )
+            else
+              ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: maxListHeight),
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  padding: const EdgeInsets.only(top: 10),
+                  itemCount: _presets.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 7),
+                  itemBuilder: (context, index) {
+                    final preset = _presets[index];
+                    return Container(
+                      key: ValueKey('rule-preset-${preset.id}'),
+                      decoration: BoxDecoration(
+                        color: surface,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: border),
+                      ),
+                      padding: const EdgeInsets.fromLTRB(13, 8, 5, 8),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.bookmark_outline_rounded,
+                            color: primaryBright,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  preset.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                Text(
+                                  '${preset.rules.length} 個規則',
+                                  style: const TextStyle(
+                                    color: subtle,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          TextButton(
+                            key: ValueKey('apply-rule-preset-${preset.id}'),
+                            onPressed: () => _apply(preset),
+                            child: const Text('套用'),
+                          ),
+                          PopupMenuButton<_RulePresetAction>(
+                            key: ValueKey('rule-preset-actions-${preset.id}'),
+                            tooltip: '預設選項',
+                            onSelected: (action) =>
+                                _handleAction(preset, action),
+                            itemBuilder: (context) => const [
+                              PopupMenuItem(
+                                value: _RulePresetAction.rename,
+                                child: Text('重新命名'),
+                              ),
+                              PopupMenuItem(
+                                value: _RulePresetAction.duplicate,
+                                child: Text('複製預設'),
+                              ),
+                              PopupMenuDivider(),
+                              PopupMenuItem(
+                                value: _RulePresetAction.delete,
+                                child: Text('刪除預設'),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('完成'),
+        ),
+      ],
+    );
+  }
+}
+
+class _RulePresetNameDialog extends StatefulWidget {
+  const _RulePresetNameDialog({
+    required this.title,
+    required this.actionLabel,
+    required this.initialName,
+    required this.existingNames,
+  });
+
+  final String title;
+  final String actionLabel;
+  final String initialName;
+  final Set<String> existingNames;
+
+  @override
+  State<_RulePresetNameDialog> createState() => _RulePresetNameDialogState();
+}
+
+class _RulePresetNameDialogState extends State<_RulePresetNameDialog> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.initialName,
+  );
+  String? _errorText;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final name = _controller.text.trim();
+    final error = switch (name) {
+      '' => '請輸入預設名稱',
+      _ when name.length > 80 => '預設名稱不可超過 80 個字元',
+      _ when widget.existingNames.contains(name.toLowerCase()) => '已有相同名稱的預設',
+      _ => null,
+    };
+    if (error != null) {
+      setState(() => _errorText = error);
+      return;
+    }
+    Navigator.pop(context, name);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: surfaceRaised,
+      title: Text(widget.title),
+      content: SizedBox(
+        width: 380,
+        child: TextField(
+          key: const ValueKey('rule-preset-name-field'),
+          controller: _controller,
+          autofocus: true,
+          maxLength: 80,
+          decoration: InputDecoration(
+            labelText: '預設名稱',
+            hintText: '例如：照片日期與流水號',
+            errorText: _errorText,
+          ),
+          textInputAction: TextInputAction.done,
+          onChanged: (_) {
+            if (_errorText != null) setState(() => _errorText = null);
+          },
+          onSubmitted: (_) => _submit(),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          key: const ValueKey('confirm-rule-preset-name'),
+          onPressed: _submit,
+          child: Text(widget.actionLabel),
+        ),
+      ],
+    );
+  }
+}
+
 class _RulesPanel extends StatelessWidget {
   const _RulesPanel({
     required this.rules,
+    required this.presetCount,
     required this.currentNames,
     required this.enabled,
     required this.canExportMapping,
     required this.onAdd,
+    required this.onManagePresets,
     required this.onUpdate,
     required this.onLoadList,
     required this.onExportMapping,
@@ -1520,10 +1940,12 @@ class _RulesPanel extends StatelessWidget {
   });
 
   final List<RenameRule> rules;
+  final int presetCount;
   final List<String> currentNames;
   final bool enabled;
   final bool canExportMapping;
   final ValueChanged<RenameRuleType> onAdd;
+  final VoidCallback onManagePresets;
   final void Function(int, RenameRule) onUpdate;
   final ValueChanged<int> onLoadList;
   final VoidCallback onExportMapping;
@@ -1560,6 +1982,20 @@ class _RulesPanel extends StatelessWidget {
                     ],
                   ),
                 ),
+                Tooltip(
+                  message: '管理規則預設',
+                  child: TextButton.icon(
+                    key: const ValueKey('rule-presets-button'),
+                    onPressed: enabled ? onManagePresets : null,
+                    style: TextButton.styleFrom(
+                      minimumSize: const Size(0, 40),
+                      padding: const EdgeInsets.symmetric(horizontal: 9),
+                    ),
+                    icon: const Icon(Icons.bookmarks_outlined, size: 18),
+                    label: const Text('預設'),
+                  ),
+                ),
+                const SizedBox(width: 5),
                 PopupMenuButton<RenameRuleType>(
                   enabled: enabled,
                   tooltip: '新增規則',
@@ -1630,7 +2066,9 @@ class _RulesPanel extends StatelessWidget {
               border: Border(top: BorderSide(color: border)),
             ),
             child: Text(
-              rules.isEmpty ? '尚未設定規則' : '已自動儲存 ${rules.length} 個規則',
+              rules.isEmpty
+                  ? '尚未設定規則 · $presetCount 個預設'
+                  : '已自動儲存 ${rules.length} 個規則 · $presetCount 個預設',
               style: const TextStyle(color: subtle, fontSize: 12),
             ),
           ),

@@ -9,21 +9,27 @@ import 'package:file_selector_platform_interface/file_selector_platform_interfac
 import 'package:flick/api/backend_gateway.dart';
 import 'package:flick/app/flick_app.dart';
 import 'package:flick/domain/file_list_io.dart';
+import 'package:flick/domain/rule_preset.dart';
 import 'package:flutter/gestures.dart'
     show PointerDeviceKind, kSecondaryMouseButton;
 import 'package:flutter/material.dart'
     show
+        EditableText,
         FilledButton,
         Icons,
         Offset,
         OutlinedButton,
         Size,
+        SizedBox,
         Text,
+        TextButton,
         TextFormField,
         ValueKey;
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
+import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 
 class FakeBackend implements BackendGateway {
   final List<PreviewRenameRequest> previewRequests = [];
@@ -186,6 +192,15 @@ class FakeFileSelector extends FileSelectorPlatform {
 }
 
 void main() {
+  setUp(() {
+    SharedPreferencesAsyncPlatform.instance =
+        InMemorySharedPreferencesAsync.empty();
+  });
+
+  tearDown(() {
+    SharedPreferencesAsyncPlatform.instance = null;
+  });
+
   testWidgets('renders the Flick rename workspace', (tester) async {
     SharedPreferences.setMockInitialValues({});
     tester.view.physicalSize = const Size(1280, 820);
@@ -221,6 +236,96 @@ void main() {
     expect(find.text('加入檔案'), findsOneWidget);
     expect(find.text('加入資料夾'), findsOneWidget);
     expect(find.byKey(const ValueKey('file-list-menu')), findsOneWidget);
+  });
+
+  testWidgets('creates, manages, applies, and restores rule presets', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(800, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(FlickApp(connector: () async => FakeBackend()));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextFormField).first, 'holiday-{n}');
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('rule-presets-button')));
+    await tester.pumpAndSettle();
+    expect(find.text('尚未建立規則預設'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('save-current-rule-preset')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('rule-preset-name-field')),
+      '旅遊照片',
+    );
+    await tester.tap(find.byKey(const ValueKey('confirm-rule-preset-name')));
+    await tester.pumpAndSettle();
+    expect(find.text('旅遊照片'), findsOneWidget);
+    expect(find.text('1 個規則'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('預設選項'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('重新命名'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('rule-preset-name-field')),
+      '旅行整理',
+    );
+    await tester.tap(find.byKey(const ValueKey('confirm-rule-preset-name')));
+    await tester.pumpAndSettle();
+    expect(find.text('旅行整理'), findsOneWidget);
+    expect(find.text('旅遊照片'), findsNothing);
+
+    await tester.tap(find.byTooltip('預設選項'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('複製預設'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('confirm-rule-preset-name')));
+    await tester.pumpAndSettle();
+    expect(find.text('旅行整理 複本'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('預設選項').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('刪除預設'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('confirm-delete-rule-preset')));
+    await tester.pumpAndSettle();
+    expect(find.text('旅行整理 複本'), findsNothing);
+
+    await tester.tap(find.widgetWithText(TextButton, '套用'));
+    await tester.pumpAndSettle();
+    expect(find.text('已套用規則預設「旅行整理」'), findsOneWidget);
+    final ruleField = find.byType(TextFormField).first;
+    final editor = tester.widget<EditableText>(
+      find.descendant(of: ruleField, matching: find.byType(EditableText)),
+    );
+    expect(editor.controller.text, 'holiday-{n}');
+
+    final stored = await SharedPreferencesAsync().getString(
+      'flick.rule-presets.v1',
+    );
+    expect(stored, isNotNull);
+    final presets = decodeRulePresets(stored!);
+    expect(presets.map((preset) => preset.name), ['旅行整理']);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(FlickApp(connector: () async => FakeBackend()));
+    await tester.pumpAndSettle();
+    final restoredRuleField = find.byType(TextFormField).first;
+    final restoredEditor = tester.widget<EditableText>(
+      find.descendant(
+        of: restoredRuleField,
+        matching: find.byType(EditableText),
+      ),
+    );
+    expect(restoredEditor.controller.text, 'holiday-{n}');
+    await tester.tap(find.byKey(const ValueKey('rule-presets-button')));
+    await tester.pumpAndSettle();
+    expect(find.text('旅行整理'), findsOneWidget);
   });
 
   testWidgets('saves and restores file list workspace state', (tester) async {
