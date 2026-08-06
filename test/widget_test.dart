@@ -12,6 +12,7 @@ import 'package:flick/domain/file_list_io.dart';
 import 'package:flick/domain/rename_rule.dart';
 import 'package:flick/domain/rule_configuration_history.dart';
 import 'package:flick/domain/rule_preset.dart';
+import 'package:flick/domain/rule_recipe_file.dart';
 import 'package:flutter/gestures.dart'
     show PointerDeviceKind, kSecondaryMouseButton;
 import 'package:flutter/material.dart'
@@ -411,6 +412,63 @@ void main() {
     await tester.tap(find.byTooltip('預設選項').last);
     await tester.pumpAndSettle();
     expect(find.text('匯出預設'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('exports and loads a versioned rule recipe file', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(800, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final originalSelector = FileSelectorPlatform.instance;
+    final selector = FakeFileSelector();
+    FileSelectorPlatform.instance = selector;
+    addTearDown(() => FileSelectorPlatform.instance = originalSelector);
+    final directory = Directory.systemTemp.createTempSync('flick-recipe-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final recipeFile = File('${directory.path}/holiday.flickrecipe');
+    selector.saveLocationResult = FileSaveLocation(recipeFile.path);
+
+    await tester.pumpWidget(FlickApp(connector: () async => FakeBackend()));
+    await tester.pumpAndSettle();
+    final ruleField = find.byType(TextFormField).first;
+    await tester.enterText(ruleField, 'holiday-{n}');
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('rule-recipe-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('save-rule-recipe')));
+    await tester.pumpAndSettle();
+
+    expect(recipeFile.existsSync(), isTrue);
+    final exported = jsonDecode(recipeFile.readAsStringSync()) as Map;
+    expect(exported['kind'], ruleRecipeFileKind);
+    expect(exported['schemaVersion'], currentRuleRecipeSchemaVersion);
+    final exportedRecipe = decodeRuleRecipeFile(
+      recipeFile.readAsStringSync(),
+      instanceId: 'widget-test',
+    );
+    expect(exportedRecipe.rules.single.value, 'holiday-{n}');
+
+    await tester.enterText(ruleField, 'changed-{n}');
+    await tester.pump();
+    selector.openFileResult = XFile(recipeFile.path);
+    await tester.tap(find.byKey(const ValueKey('rule-recipe-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('load-rule-recipe')));
+    await tester.pumpAndSettle();
+    expect(find.text('取代目前的規則？'), findsOneWidget);
+    expect(find.textContaining('命名預設不會變更'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('confirm-load-rule-recipe')));
+    await tester.pumpAndSettle();
+
+    final restoredField = find.byType(TextFormField).first;
+    final restoredEditor = tester.widget<EditableText>(
+      find.descendant(of: restoredField, matching: find.byType(EditableText)),
+    );
+    expect(restoredEditor.controller.text, 'holiday-{n}');
+    expect(find.text('已從 holiday.flickrecipe 載入 1 個規則'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

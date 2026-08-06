@@ -18,6 +18,7 @@ import '../domain/rename_list_io.dart';
 import '../domain/rule_configuration_history.dart';
 import '../domain/rename_rule.dart';
 import '../domain/rule_preset.dart';
+import '../domain/rule_recipe_file.dart';
 import '../platform/file_actions.dart';
 import 'flick_app.dart';
 
@@ -25,6 +26,7 @@ const _savedRulesKey = 'flick.rename-rules.v2';
 const _savedRulePresetsKey = 'flick.rule-presets.v1';
 const _savedRuleHistoryKey = 'flick.rule-history.v1';
 const _maxRulePresetFileBytes = 5 * 1024 * 1024;
+const _maxRuleRecipeFileBytes = 1024 * 1024;
 const _maxRenameItems = 10000;
 const _previewRowExtent = 65.0;
 
@@ -907,6 +909,83 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     _previewFocusNode.requestFocus();
   }
 
+  Future<void> _saveRuleRecipeFile() async {
+    try {
+      final location = await getSaveLocation(
+        acceptedTypeGroups: const [
+          XTypeGroup(label: 'Flick 規則配方', extensions: ['flickrecipe']),
+        ],
+        suggestedName: 'flick-rules.flickrecipe',
+        confirmButtonText: '匯出配方',
+      );
+      if (location == null || !mounted) return;
+      final outputPath = location.path.toLowerCase().endsWith('.flickrecipe')
+          ? location.path
+          : '${location.path}.flickrecipe';
+      File(
+        outputPath,
+      ).writeAsStringSync(encodeRuleRecipeFile(_rules), flush: true);
+      if (!mounted) return;
+      setState(() {
+        _notice = '已將目前規則匯出到 ${_fileNameFromPath(outputPath)}';
+        _error = null;
+      });
+    } on Object catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  Future<void> _loadRuleRecipeFile() async {
+    try {
+      final file = await openFile(
+        acceptedTypeGroups: const [
+          XTypeGroup(label: 'Flick 規則配方', extensions: ['flickrecipe', 'json']),
+        ],
+        confirmButtonText: '載入配方',
+      );
+      if (file == null || !mounted) return;
+      final input = File(file.path);
+      if (input.lengthSync() > _maxRuleRecipeFileBytes) {
+        throw const FormatException('規則配方檔案不可超過 1 MB');
+      }
+      var encoded = input.readAsStringSync();
+      if (encoded.startsWith('\uFEFF')) encoded = encoded.substring(1);
+      final recipe = decodeRuleRecipeFile(encoded);
+      final replace = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          backgroundColor: surfaceRaised,
+          title: const Text('取代目前的規則？'),
+          content: Text(
+            '載入 ${recipe.rules.length} 個規則會取代目前的 ${_rules.length} 個規則；你的命名預設不會變更。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              key: const ValueKey('confirm-load-rule-recipe'),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('載入並取代'),
+            ),
+          ],
+        ),
+      );
+      if (replace != true || !mounted) return;
+      setState(() {
+        _rules = recipe.rules;
+        _notice = '已從 ${file.name} 載入 ${recipe.rules.length} 個規則';
+        _error = null;
+      });
+      unawaited(_saveRules());
+      _schedulePreview(immediate: true);
+      _scheduleRuleHistorySnapshot(immediate: true);
+    } on Object catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
   Future<void> _showRulePresets() async {
     await showDialog<void>(
       context: context,
@@ -1272,6 +1351,8 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                           listEquals(_plan!.sourcePaths, _paths),
                       onAdd: _addRule,
                       onManagePresets: _showRulePresets,
+                      onLoadRecipe: _loadRuleRecipeFile,
+                      onSaveRecipe: _saveRuleRecipeFile,
                       onUpdate: _updateRule,
                       onLoadList: _loadListRule,
                       onExportMapping: _exportRenameMapping,
@@ -2487,6 +2568,8 @@ class _RulePresetNameDialogState extends State<_RulePresetNameDialog> {
   }
 }
 
+enum _RuleRecipeFileAction { load, save }
+
 class _RulesPanel extends StatelessWidget {
   const _RulesPanel({
     required this.rules,
@@ -2496,6 +2579,8 @@ class _RulesPanel extends StatelessWidget {
     required this.canExportMapping,
     required this.onAdd,
     required this.onManagePresets,
+    required this.onLoadRecipe,
+    required this.onSaveRecipe,
     required this.onUpdate,
     required this.onLoadList,
     required this.onExportMapping,
@@ -2510,6 +2595,8 @@ class _RulesPanel extends StatelessWidget {
   final bool canExportMapping;
   final ValueChanged<RenameRuleType> onAdd;
   final VoidCallback onManagePresets;
+  final VoidCallback onLoadRecipe;
+  final VoidCallback onSaveRecipe;
   final void Function(int, RenameRule) onUpdate;
   final ValueChanged<int> onLoadList;
   final VoidCallback onExportMapping;
@@ -2557,6 +2644,48 @@ class _RulesPanel extends StatelessWidget {
                     ),
                     icon: const Icon(Icons.bookmarks_outlined, size: 18),
                     label: const Text('預設'),
+                  ),
+                ),
+                const SizedBox(width: 5),
+                PopupMenuButton<_RuleRecipeFileAction>(
+                  key: const ValueKey('rule-recipe-menu'),
+                  enabled: enabled,
+                  tooltip: '規則配方檔',
+                  onSelected: (action) {
+                    switch (action) {
+                      case _RuleRecipeFileAction.load:
+                        onLoadRecipe();
+                        return;
+                      case _RuleRecipeFileAction.save:
+                        onSaveRecipe();
+                        return;
+                    }
+                  },
+                  itemBuilder: (context) => [
+                    const PopupMenuItem(
+                      key: ValueKey('load-rule-recipe'),
+                      value: _RuleRecipeFileAction.load,
+                      child: Text('載入規則配方…'),
+                    ),
+                    PopupMenuItem(
+                      key: const ValueKey('save-rule-recipe'),
+                      value: _RuleRecipeFileAction.save,
+                      enabled: rules.isNotEmpty,
+                      child: const Text('匯出目前配方…'),
+                    ),
+                  ],
+                  child: Container(
+                    padding: const EdgeInsets.all(9),
+                    decoration: BoxDecoration(
+                      color: surfaceRaised,
+                      borderRadius: BorderRadius.circular(9),
+                      border: Border.all(color: border),
+                    ),
+                    child: const Icon(
+                      Icons.description_outlined,
+                      color: subtle,
+                      size: 20,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 5),
