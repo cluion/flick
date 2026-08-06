@@ -22,6 +22,7 @@ import 'flick_app.dart';
 
 const _savedRulesKey = 'flick.rename-rules.v2';
 const _savedRulePresetsKey = 'flick.rule-presets.v1';
+const _maxRulePresetFileBytes = 5 * 1024 * 1024;
 const _maxRenameItems = 10000;
 const _previewRowExtent = 65.0;
 
@@ -1569,7 +1570,7 @@ class _MessageBar extends StatelessWidget {
   }
 }
 
-enum _RulePresetAction { rename, duplicate, delete }
+enum _RulePresetAction { rename, duplicate, export, delete }
 
 class _RulePresetManagerDialog extends StatefulWidget {
   const _RulePresetManagerDialog({
@@ -1591,6 +1592,9 @@ class _RulePresetManagerDialog extends StatefulWidget {
 
 class _RulePresetManagerDialogState extends State<_RulePresetManagerDialog> {
   late List<RulePreset> _presets = List.of(widget.initialPresets);
+  var _transferring = false;
+  String? _transferError;
+  String? _transferNotice;
 
   Set<String> _existingNames({String? exceptPresetId}) => {
     for (final preset in _presets)
@@ -1616,7 +1620,10 @@ class _RulePresetManagerDialogState extends State<_RulePresetManagerDialog> {
 
   void _replacePresets(List<RulePreset> presets) {
     final immutable = List<RulePreset>.unmodifiable(presets);
-    setState(() => _presets = immutable);
+    setState(() {
+      _presets = immutable;
+      _transferError = null;
+    });
     widget.onPresetsChanged(immutable);
   }
 
@@ -1659,6 +1666,11 @@ class _RulePresetManagerDialogState extends State<_RulePresetManagerDialog> {
         final presets = [..._presets]..insert(index + 1, copy);
         _replacePresets(presets);
         return;
+      case _RulePresetAction.export:
+        await _exportPresets([
+          preset,
+        ], suggestedName: '${rulePresetFileStem(preset.name)}.flickpreset');
+        return;
       case _RulePresetAction.delete:
         final confirmed = await showDialog<bool>(
           context: context,
@@ -1686,6 +1698,85 @@ class _RulePresetManagerDialogState extends State<_RulePresetManagerDialog> {
         ]);
         return;
     }
+  }
+
+  Future<void> _importPresets() async {
+    setState(() {
+      _transferring = true;
+      _transferError = null;
+      _transferNotice = null;
+    });
+    try {
+      final file = await openFile(
+        acceptedTypeGroups: const [
+          XTypeGroup(label: 'Flick 規則預設', extensions: ['flickpreset']),
+        ],
+        confirmButtonText: '匯入預設',
+      );
+      if (file == null || !mounted) return;
+      if (await file.length() > _maxRulePresetFileBytes) {
+        throw const FormatException('規則預設檔案不可超過 5 MB');
+      }
+      var encoded = await file.readAsString();
+      if (encoded.startsWith('\uFEFF')) encoded = encoded.substring(1);
+      final imported = decodeRulePresets(encoded);
+      if (imported.isEmpty) {
+        throw const FormatException('檔案中沒有可匯入的規則預設');
+      }
+      final merged = mergeImportedRulePresets(
+        existing: _presets,
+        imported: imported,
+      );
+      _replacePresets(merged);
+      setState(() {
+        _transferNotice = '已從 ${file.name} 匯入 ${imported.length} 個預設';
+      });
+    } on Object catch (error) {
+      if (mounted) setState(() => _transferError = _transferErrorText(error));
+    } finally {
+      if (mounted) setState(() => _transferring = false);
+    }
+  }
+
+  Future<void> _exportPresets(
+    List<RulePreset> presets, {
+    required String suggestedName,
+  }) async {
+    setState(() {
+      _transferring = true;
+      _transferError = null;
+      _transferNotice = null;
+    });
+    try {
+      final location = await getSaveLocation(
+        acceptedTypeGroups: const [
+          XTypeGroup(label: 'Flick 規則預設', extensions: ['flickpreset']),
+        ],
+        suggestedName: suggestedName,
+        confirmButtonText: '匯出預設',
+      );
+      if (location == null || !mounted) return;
+      final outputPath = location.path.toLowerCase().endsWith('.flickpreset')
+          ? location.path
+          : '${location.path}.flickpreset';
+      await File(
+        outputPath,
+      ).writeAsString(encodeRulePresets(presets), flush: true);
+      if (!mounted) return;
+      setState(() {
+        _transferNotice =
+            '已將 ${presets.length} 個預設匯出到 ${_fileNameFromPath(outputPath)}';
+      });
+    } on Object catch (error) {
+      if (mounted) setState(() => _transferError = _transferErrorText(error));
+    } finally {
+      if (mounted) setState(() => _transferring = false);
+    }
+  }
+
+  String _transferErrorText(Object error) {
+    if (error case FormatException(:final message)) return message;
+    return error.toString();
   }
 
   String _availableCopyName(String name) {
@@ -1724,15 +1815,50 @@ class _RulePresetManagerDialogState extends State<_RulePresetManagerDialog> {
               style: TextStyle(color: subtle, fontSize: 13),
             ),
             const SizedBox(height: 14),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: FilledButton.icon(
-                key: const ValueKey('save-current-rule-preset'),
-                onPressed: _saveCurrentRules,
-                icon: const Icon(Icons.bookmark_add_outlined, size: 18),
-                label: const Text('儲存目前規則'),
-              ),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  key: const ValueKey('save-current-rule-preset'),
+                  onPressed: _transferring ? null : _saveCurrentRules,
+                  icon: const Icon(Icons.bookmark_add_outlined, size: 18),
+                  label: const Text('儲存目前規則'),
+                ),
+                OutlinedButton.icon(
+                  key: const ValueKey('import-rule-presets'),
+                  onPressed: _transferring ? null : _importPresets,
+                  icon: const Icon(Icons.file_download_outlined, size: 18),
+                  label: const Text('匯入'),
+                ),
+                OutlinedButton.icon(
+                  key: const ValueKey('export-all-rule-presets'),
+                  onPressed: _transferring || _presets.isEmpty
+                      ? null
+                      : () => _exportPresets(
+                          _presets,
+                          suggestedName: 'flick-presets.flickpreset',
+                        ),
+                  icon: const Icon(Icons.file_upload_outlined, size: 18),
+                  label: const Text('全部匯出'),
+                ),
+              ],
             ),
+            if (_transferError case final message?) ...[
+              const SizedBox(height: 10),
+              Text(
+                message,
+                key: const ValueKey('rule-preset-transfer-error'),
+                style: const TextStyle(color: danger, fontSize: 12),
+              ),
+            ] else if (_transferNotice case final message?) ...[
+              const SizedBox(height: 10),
+              Text(
+                message,
+                key: const ValueKey('rule-preset-transfer-notice'),
+                style: const TextStyle(color: mint, fontSize: 12),
+              ),
+            ],
             const SizedBox(height: 14),
             const Divider(height: 1),
             if (_presets.isEmpty)
@@ -1797,11 +1923,14 @@ class _RulePresetManagerDialogState extends State<_RulePresetManagerDialog> {
                           ),
                           TextButton(
                             key: ValueKey('apply-rule-preset-${preset.id}'),
-                            onPressed: () => _apply(preset),
+                            onPressed: _transferring
+                                ? null
+                                : () => _apply(preset),
                             child: const Text('套用'),
                           ),
                           PopupMenuButton<_RulePresetAction>(
                             key: ValueKey('rule-preset-actions-${preset.id}'),
+                            enabled: !_transferring,
                             tooltip: '預設選項',
                             onSelected: (action) =>
                                 _handleAction(preset, action),
@@ -1813,6 +1942,10 @@ class _RulePresetManagerDialogState extends State<_RulePresetManagerDialog> {
                               PopupMenuItem(
                                 value: _RulePresetAction.duplicate,
                                 child: Text('複製預設'),
+                              ),
+                              PopupMenuItem(
+                                value: _RulePresetAction.export,
+                                child: Text('匯出預設'),
                               ),
                               PopupMenuDivider(),
                               PopupMenuItem(

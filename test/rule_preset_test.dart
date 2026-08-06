@@ -83,4 +83,42 @@ void main() {
       throwsFormatException,
     );
   });
+
+  test('imports preserve existing presets and resolve conflicts safely', () {
+    final existing = RulePreset(id: 'existing', name: '照片', rules: const []);
+    final imported = [
+      RulePreset(id: 'foreign-one', name: '照片', rules: const []),
+      RulePreset(id: 'foreign-two', name: '照片（匯入）', rules: const []),
+    ];
+
+    final merged = mergeImportedRulePresets(
+      existing: [existing],
+      imported: imported,
+      importId: 'test',
+    );
+
+    expect(merged.map((preset) => preset.id), [
+      'existing',
+      'import-test-0',
+      'import-test-1',
+    ]);
+    expect(merged.map((preset) => preset.name), ['照片', '照片（匯入）', '照片（匯入 2）']);
+  });
+
+  test('export file stems are safe across desktop platforms', () {
+    expect(rulePresetFileStem(r'  Trip: 2026 / JPG  '), 'Trip- 2026 - JPG');
+    expect(rulePresetFileStem('...'), 'flick-preset');
+    expect(
+      rulePresetFileStem(List.filled(100, 'A').join()),
+      List.filled(80, 'A').join(),
+    );
+  });
+
+  test('preset documents enforce the collection limit', () {
+    final preset = RulePreset(id: 'one', name: '常用', rules: const []);
+    expect(
+      () => encodeRulePresets(List.filled(maxRulePresetCount + 1, preset)),
+      throwsFormatException,
+    );
+  });
 }

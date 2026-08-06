@@ -9,6 +9,7 @@ import 'package:file_selector_platform_interface/file_selector_platform_interfac
 import 'package:flick/api/backend_gateway.dart';
 import 'package:flick/app/flick_app.dart';
 import 'package:flick/domain/file_list_io.dart';
+import 'package:flick/domain/rename_rule.dart';
 import 'package:flick/domain/rule_preset.dart';
 import 'package:flutter/gestures.dart'
     show PointerDeviceKind, kSecondaryMouseButton;
@@ -326,6 +327,90 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('rule-presets-button')));
     await tester.pumpAndSettle();
     expect(find.text('旅行整理'), findsOneWidget);
+  });
+
+  testWidgets('exports and safely imports versioned rule preset files', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final initialPreset = RulePreset(
+      id: 'photos',
+      name: '照片整理',
+      rules: const [
+        RenameRule(id: 'prefix', type: RenameRuleType.prefix, value: 'Trip-'),
+      ],
+    );
+    SharedPreferencesAsyncPlatform.instance =
+        InMemorySharedPreferencesAsync.withData({
+          'flick.rule-presets.v1': encodeRulePresets([initialPreset]),
+        });
+    tester.view.physicalSize = const Size(800, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final originalSelector = FileSelectorPlatform.instance;
+    final selector = FakeFileSelector();
+    FileSelectorPlatform.instance = selector;
+    addTearDown(() => FileSelectorPlatform.instance = originalSelector);
+    final directory = Directory.systemTemp.createTempSync('flick-presets-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final allPresetsFile = File('${directory.path}/all.flickpreset');
+    selector.saveLocationResult = FileSaveLocation(allPresetsFile.path);
+
+    await tester.pumpWidget(FlickApp(connector: () async => FakeBackend()));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('rule-presets-button')));
+    await tester.pumpAndSettle();
+    final exportAllButton = tester.widget<OutlinedButton>(
+      find.byKey(const ValueKey('export-all-rule-presets')),
+    );
+    await tester.runAsync(() async {
+      exportAllButton.onPressed!();
+      for (
+        var index = 0;
+        index < 50 &&
+            (!allPresetsFile.existsSync() || allPresetsFile.lengthSync() == 0);
+        index++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    });
+    await tester.pumpAndSettle();
+
+    expect(allPresetsFile.existsSync(), isTrue);
+    expect(
+      decodeRulePresets(allPresetsFile.readAsStringSync()).single.name,
+      '照片整理',
+    );
+    final exportedDialogText = tester
+        .widgetList<Text>(find.byType(Text))
+        .map((widget) => widget.data)
+        .whereType<String>()
+        .join(' | ');
+    expect(
+      find.textContaining('已將 1 個預設匯出到'),
+      findsOneWidget,
+      reason: exportedDialogText,
+    );
+
+    selector.openFileResult = XFile(allPresetsFile.path);
+    final importButton = tester.widget<OutlinedButton>(
+      find.byKey(const ValueKey('import-rule-presets')),
+    );
+    await tester.runAsync(() async {
+      importButton.onPressed!();
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    });
+    await tester.pumpAndSettle();
+    expect(find.text('照片整理'), findsOneWidget);
+    expect(find.text('照片整理（匯入）'), findsOneWidget);
+    expect(find.textContaining('已從 all.flickpreset 匯入 1 個預設'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('預設選項').last);
+    await tester.pumpAndSettle();
+    expect(find.text('匯出預設'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('saves and restores file list workspace state', (tester) async {

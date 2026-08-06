@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'rename_rule.dart';
 
 const currentRulePresetSchemaVersion = 1;
+const maxRulePresetCount = 1000;
 
 class RulePreset {
   RulePreset({
@@ -75,6 +76,9 @@ class RulePreset {
 }
 
 String encodeRulePresets(List<RulePreset> presets) {
+  if (presets.length > maxRulePresetCount) {
+    throw const FormatException('規則預設超過 1000 個的上限');
+  }
   return jsonEncode({
     'schemaVersion': currentRulePresetSchemaVersion,
     'presets': presets.map((preset) => preset.toJson()).toList(growable: false),
@@ -94,6 +98,9 @@ List<RulePreset> decodeRulePresets(String encoded) {
   final encodedPresets = document['presets'];
   if (encodedPresets is! List) {
     throw const FormatException('規則預設清單無效');
+  }
+  if (encodedPresets.length > maxRulePresetCount) {
+    throw const FormatException('規則預設超過 1000 個的上限');
   }
 
   final presets = <RulePreset>[];
@@ -115,4 +122,54 @@ List<RulePreset> decodeRulePresets(String encoded) {
     presets.add(preset);
   }
   return List.unmodifiable(presets);
+}
+
+List<RulePreset> mergeImportedRulePresets({
+  required List<RulePreset> existing,
+  required List<RulePreset> imported,
+  String? importId,
+}) {
+  if (existing.length + imported.length > maxRulePresetCount) {
+    throw const FormatException('匯入後會超過 1000 個規則預設的上限');
+  }
+
+  final merged = [...existing];
+  final ids = existing.map((preset) => preset.id).toSet();
+  final names = existing.map((preset) => preset.name.toLowerCase()).toSet();
+  final prefix = importId ?? DateTime.now().microsecondsSinceEpoch.toString();
+  for (var index = 0; index < imported.length; index++) {
+    final preset = imported[index];
+    var id = 'import-$prefix-$index';
+    var idSuffix = 2;
+    while (!ids.add(id)) {
+      id = 'import-$prefix-$index-$idSuffix';
+      idSuffix++;
+    }
+    final name = _availableImportedName(preset.name, names);
+    names.add(name.toLowerCase());
+    merged.add(preset.copyWith(id: id, name: name));
+  }
+  return List.unmodifiable(merged);
+}
+
+String _availableImportedName(String name, Set<String> existingNames) {
+  if (!existingNames.contains(name.toLowerCase())) return name;
+  final importedSuffix = RegExp(r'^(.*)（匯入(?: \d+)?）$').firstMatch(name);
+  final root = importedSuffix?.group(1) ?? name;
+  final base = '$root（匯入）';
+  if (!existingNames.contains(base.toLowerCase())) return base;
+  var suffix = 2;
+  while (existingNames.contains('$root（匯入 $suffix）'.toLowerCase())) {
+    suffix++;
+  }
+  return '$root（匯入 $suffix）';
+}
+
+String rulePresetFileStem(String name) {
+  final sanitized = name
+      .trim()
+      .replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '-')
+      .replaceAll(RegExp(r'[. ]+$'), '');
+  if (sanitized.isEmpty) return 'flick-preset';
+  return sanitized.length <= 80 ? sanitized : sanitized.substring(0, 80);
 }
