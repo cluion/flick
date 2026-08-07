@@ -575,6 +575,236 @@ func TestOrganizationServiceAppliesSwapThroughStaging(t *testing.T) {
 	}
 }
 
+func TestOrganizationServiceUndoesCompletedBatchAndRemovesEmptyFolders(
+	t *testing.T,
+) {
+	root := t.TempDir()
+	source := writeOrganizationFixture(t, filepath.Join(root, "photo.jpg"))
+	service := NewOrganizationServiceAt(
+		filepath.Join(t.TempDir(), "operation-history.json"),
+	).(*organizationService)
+	plan, err := service.Preview(
+		root,
+		[]OrganizationFolderInput{{ID: "photos", Name: "Images"}},
+		[]OrganizationItemInput{{
+			ID:                  "item-1",
+			SourcePath:          source,
+			DestinationFolderID: "photos",
+		}},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	applied, err := service.Apply(plan.ID)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	history := service.History()
+	if len(history) != 1 || history[0].ID != applied.ID ||
+		history[0].State != models.FilesystemBatchStateCompleted {
+		t.Fatalf("completed history = %#v", history)
+	}
+
+	undone, err := service.Undo(applied.ID)
+	if err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	if undone.State != models.FilesystemBatchStateUndone || undone.UndoneAt == nil ||
+		undone.RemovedFolderCount != 1 || undone.RetainedFolderCount != 0 {
+		t.Fatalf("undone batch = %#v", undone)
+	}
+	if content, err := os.ReadFile(source); err != nil || string(content) != "fixture" {
+		t.Fatalf("restored source content=%q err=%v", content, err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "Images")); !os.IsNotExist(err) {
+		t.Fatalf("empty Flick folder survived undo: %v", err)
+	}
+	history = service.History()
+	if len(history) != 1 || history[0].State != models.FilesystemBatchStateUndone ||
+		history[0].UndoneAt == nil {
+		t.Fatalf("undone history = %#v", history)
+	}
+	_, err = service.Undo(applied.ID)
+	assertOrganizationUserErrorCode(t, err, "batch_not_undoable")
+}
+
+func TestOrganizationServiceUndoesSwapThroughStaging(t *testing.T) {
+	root := t.TempDir()
+	leftDirectory := filepath.Join(root, "Left")
+	rightDirectory := filepath.Join(root, "Right")
+	if err := os.Mkdir(leftDirectory, 0o700); err != nil {
+		t.Fatalf("mkdir left: %v", err)
+	}
+	if err := os.Mkdir(rightDirectory, 0o700); err != nil {
+		t.Fatalf("mkdir right: %v", err)
+	}
+	left := filepath.Join(leftDirectory, "same.txt")
+	right := filepath.Join(rightDirectory, "same.txt")
+	if err := os.WriteFile(left, []byte("left"), 0o600); err != nil {
+		t.Fatalf("write left: %v", err)
+	}
+	if err := os.WriteFile(right, []byte("right"), 0o600); err != nil {
+		t.Fatalf("write right: %v", err)
+	}
+	service := NewOrganizationServiceAt(
+		filepath.Join(t.TempDir(), "operation-history.json"),
+	)
+	plan, err := service.Preview(
+		root,
+		[]OrganizationFolderInput{
+			{ID: "left", Name: "Left"},
+			{ID: "right", Name: "Right"},
+		},
+		[]OrganizationItemInput{
+			{ID: "left-item", SourcePath: left, DestinationFolderID: "right"},
+			{ID: "right-item", SourcePath: right, DestinationFolderID: "left"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	batch, err := service.Apply(plan.ID)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if _, err := service.Undo(batch.ID); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	leftContent, leftErr := os.ReadFile(left)
+	rightContent, rightErr := os.ReadFile(right)
+	if leftErr != nil || rightErr != nil || string(leftContent) != "left" ||
+		string(rightContent) != "right" {
+		t.Fatalf(
+			"restored swap left=%q right=%q leftErr=%v rightErr=%v",
+			leftContent,
+			rightContent,
+			leftErr,
+			rightErr,
+		)
+	}
+}
+
+func TestOrganizationServiceRejectsUndoWhenDestinationChanged(t *testing.T) {
+	root := t.TempDir()
+	source := writeOrganizationFixture(t, filepath.Join(root, "photo.jpg"))
+	service := NewOrganizationServiceAt(
+		filepath.Join(t.TempDir(), "operation-history.json"),
+	)
+	plan, err := service.Preview(
+		root,
+		[]OrganizationFolderInput{{ID: "photos", Name: "Images"}},
+		[]OrganizationItemInput{{
+			ID:                  "item-1",
+			SourcePath:          source,
+			DestinationFolderID: "photos",
+		}},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	batch, err := service.Apply(plan.ID)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	target := filepath.Join(root, "Images", "photo.jpg")
+	if err := os.WriteFile(target, []byte("changed destination"), 0o600); err != nil {
+		t.Fatalf("change target: %v", err)
+	}
+	_, err = service.Undo(batch.ID)
+	assertOrganizationUserErrorCode(t, err, "organization_changed")
+	if _, err := os.Lstat(source); !os.IsNotExist(err) {
+		t.Fatalf("rejected undo restored source: %v", err)
+	}
+	if content, err := os.ReadFile(target); err != nil ||
+		string(content) != "changed destination" {
+		t.Fatalf("changed target content=%q err=%v", content, err)
+	}
+}
+
+func TestOrganizationServiceUndoRetainsNonEmptyCreatedFolder(t *testing.T) {
+	root := t.TempDir()
+	source := writeOrganizationFixture(t, filepath.Join(root, "photo.jpg"))
+	service := NewOrganizationServiceAt(
+		filepath.Join(t.TempDir(), "operation-history.json"),
+	)
+	plan, err := service.Preview(
+		root,
+		[]OrganizationFolderInput{{ID: "photos", Name: "Images"}},
+		[]OrganizationItemInput{{
+			ID:                  "item-1",
+			SourcePath:          source,
+			DestinationFolderID: "photos",
+		}},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	batch, err := service.Apply(plan.ID)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	destination := filepath.Join(root, "Images")
+	unrelated := writeOrganizationFixture(t, filepath.Join(destination, "notes.txt"))
+	undone, err := service.Undo(batch.ID)
+	if err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	if undone.RemovedFolderCount != 0 || undone.RetainedFolderCount != 1 {
+		t.Fatalf("folder counts = %#v", undone)
+	}
+	if content, err := os.ReadFile(unrelated); err != nil || string(content) != "fixture" {
+		t.Fatalf("unrelated content=%q err=%v", content, err)
+	}
+	if content, err := os.ReadFile(source); err != nil || string(content) != "fixture" {
+		t.Fatalf("source content=%q err=%v", content, err)
+	}
+}
+
+func TestOrganizationServiceRollsBackFailedUndo(t *testing.T) {
+	root := t.TempDir()
+	source := writeOrganizationFixture(t, filepath.Join(root, "photo.jpg"))
+	service := NewOrganizationServiceAt(
+		filepath.Join(t.TempDir(), "operation-history.json"),
+	).(*organizationService)
+	plan, err := service.Preview(
+		root,
+		[]OrganizationFolderInput{{ID: "photos", Name: "Images"}},
+		[]OrganizationItemInput{{
+			ID:                  "item-1",
+			SourcePath:          source,
+			DestinationFolderID: "photos",
+		}},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	batch, err := service.Apply(plan.ID)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	renameCalls := 0
+	service.renamePath = func(oldPath, newPath string) error {
+		renameCalls++
+		if renameCalls == 2 {
+			return errors.New("injected undo commit failure")
+		}
+		return os.Rename(oldPath, newPath)
+	}
+	failed, err := service.Undo(batch.ID)
+	assertOrganizationUserErrorCode(t, err, "organization_undo_rolled_back")
+	if failed.State != models.FilesystemBatchStateCompleted ||
+		service.journalLoadError != nil {
+		t.Fatalf("rolled-back undo=%#v journalErr=%v", failed, service.journalLoadError)
+	}
+	if _, err := os.Lstat(source); !os.IsNotExist(err) {
+		t.Fatalf("source survived rolled-back undo: %v", err)
+	}
+	target := filepath.Join(root, "Images", "photo.jpg")
+	if content, err := os.ReadFile(target); err != nil || string(content) != "fixture" {
+		t.Fatalf("applied target content=%q err=%v", content, err)
+	}
+}
+
 func TestOrganizationServiceRollsBackFailedCommit(t *testing.T) {
 	root := t.TempDir()
 	source := writeOrganizationFixture(t, filepath.Join(root, "photo.jpg"))
@@ -884,6 +1114,60 @@ func TestOrganizationServiceRecoversCommittedSwapOnStartup(t *testing.T) {
 		)
 	}
 	if recovered.journal.batches[0].State != models.FilesystemBatchStateRolledBack {
+		t.Fatalf("recovered batch = %#v", recovered.journal.batches[0])
+	}
+}
+
+func TestOrganizationServiceRecoversInterruptedUndoToAppliedState(t *testing.T) {
+	root := t.TempDir()
+	source := writeOrganizationFixture(t, filepath.Join(root, "photo.jpg"))
+	journalPath := filepath.Join(t.TempDir(), "operation-history.json")
+	service := NewOrganizationServiceAt(journalPath).(*organizationService)
+	plan, err := service.Preview(
+		root,
+		[]OrganizationFolderInput{{ID: "photos", Name: "Images"}},
+		[]OrganizationItemInput{{
+			ID:                  "item-1",
+			SourcePath:          source,
+			DestinationFolderID: "photos",
+		}},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	batch, err := service.Apply(plan.ID)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	move := batch.Operations[1]
+	batch.State = models.FilesystemBatchStateUndoCommitting
+	if err := service.journal.update(batch); err != nil {
+		t.Fatalf("save undo committing batch: %v", err)
+	}
+	if err := os.Rename(move.TargetPath, move.TemporaryPath); err != nil {
+		t.Fatalf("simulate undo stage: %v", err)
+	}
+	if err := os.Rename(move.TemporaryPath, move.SourcePath); err != nil {
+		t.Fatalf("simulate undo commit: %v", err)
+	}
+	if err := os.Remove(batch.Operations[0].TargetPath); err != nil {
+		t.Fatalf("simulate undo folder removal: %v", err)
+	}
+
+	recovered := NewOrganizationServiceAt(journalPath).(*organizationService)
+	if recovered.journalLoadError != nil {
+		t.Fatalf("recover: %v", recovered.journalLoadError)
+	}
+	if _, err := os.Lstat(source); !os.IsNotExist(err) {
+		t.Fatalf("startup recovery left source restored: %v", err)
+	}
+	if content, err := os.ReadFile(move.TargetPath); err != nil ||
+		string(content) != "fixture" {
+		t.Fatalf("recovered target content=%q err=%v", content, err)
+	}
+	if recovered.journal.batches[0].State !=
+		models.FilesystemBatchStateCompleted ||
+		recovered.journal.batches[0].UndoneAt != nil {
 		t.Fatalf("recovered batch = %#v", recovered.journal.batches[0])
 	}
 }

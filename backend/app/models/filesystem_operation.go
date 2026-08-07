@@ -58,6 +58,10 @@ const (
 	FilesystemBatchStateStaged             = "staged"
 	FilesystemBatchStateCommitting         = "committing"
 	FilesystemBatchStateCompleted          = "completed"
+	FilesystemBatchStateUndoing            = "undoing"
+	FilesystemBatchStateUndoStaged         = "undo_staged"
+	FilesystemBatchStateUndoCommitting     = "undo_committing"
+	FilesystemBatchStateUndone             = "undone"
 	FilesystemBatchStateRolledBack         = "rolled_back"
 	FilesystemBatchStateFailed             = "failed"
 )
@@ -75,12 +79,15 @@ type FilesystemBatchOperation struct {
 }
 
 type FilesystemOperationBatch struct {
-	ID          string                     `json:"id"`
-	PlanID      string                     `json:"planId"`
-	PreparedAt  time.Time                  `json:"preparedAt"`
-	CompletedAt *time.Time                 `json:"completedAt,omitempty"`
-	State       string                     `json:"state"`
-	Message     string                     `json:"message,omitempty"`
-	RootPath    string                     `json:"rootPath"`
-	Operations  []FilesystemBatchOperation `json:"operations"`
+	ID                  string                     `json:"id"`
+	PlanID              string                     `json:"planId"`
+	PreparedAt          time.Time                  `json:"preparedAt"`
+	CompletedAt         *time.Time                 `json:"completedAt,omitempty"`
+	UndoneAt            *time.Time                 `json:"undoneAt,omitempty"`
+	State               string                     `json:"state"`
+	Message             string                     `json:"message,omitempty"`
+	RootPath            string                     `json:"rootPath"`
+	Operations          []FilesystemBatchOperation `json:"operations"`
+	RemovedFolderCount  int                        `json:"removedFolderCount,omitempty"`
+	RetainedFolderCount int                        `json:"retainedFolderCount,omitempty"`
 }

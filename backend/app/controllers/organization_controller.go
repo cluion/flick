@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/cluion/bridra/backend/framework"
 	"github.com/cluion/flick/backend/app/models"
@@ -37,16 +38,7 @@ func (controller *OrganizationController) Apply(
 		}
 		return nil, renderRenameError(err)
 	}
-	movedCount := 0
-	createdFolderCount := 0
-	for _, operation := range batch.Operations {
-		switch operation.Kind {
-		case models.FilesystemOperationMove:
-			movedCount++
-		case models.FilesystemOperationMkdir:
-			createdFolderCount++
-		}
-	}
+	movedCount, createdFolderCount := organizationOperationCounts(batch)
 	return responses.ApplyOrganizationResponse{
 		BatchId:            batch.ID,
 		MovedCount:         movedCount,
@@ -57,6 +49,80 @@ func (controller *OrganizationController) Apply(
 			movedCount,
 		),
 	}, nil
+}
+
+func (controller *OrganizationController) Undo(
+	ctx *framework.Context,
+) (any, error) {
+	request, err := framework.BindAndValidate[requests.UndoOrganizationRequest](ctx)
+	if err != nil {
+		return nil, err
+	}
+	batch, err := controller.service.Undo(request.BatchId)
+	if err != nil {
+		return nil, renderRenameError(err)
+	}
+	restoredCount, _ := organizationOperationCounts(batch)
+	return responses.UndoOrganizationResponse{
+		BatchId:             batch.ID,
+		RestoredCount:       restoredCount,
+		RemovedFolderCount:  batch.RemovedFolderCount,
+		RetainedFolderCount: batch.RetainedFolderCount,
+		Message: fmt.Sprintf(
+			"Restored %d files, removed %d empty folders, and retained %d non-empty folders.",
+			restoredCount,
+			batch.RemovedFolderCount,
+			batch.RetainedFolderCount,
+		),
+	}, nil
+}
+
+func (controller *OrganizationController) History(
+	*framework.Context,
+) (any, error) {
+	batches := controller.service.History()
+	response := responses.OrganizationHistoryResponse{
+		BatchIds:            make([]string, 0, len(batches)),
+		Timestamps:          make([]string, 0, len(batches)),
+		MovedCounts:         make([]int, 0, len(batches)),
+		CreatedFolderCounts: make([]int, 0, len(batches)),
+		Undoable:            make([]bool, 0, len(batches)),
+	}
+	for _, batch := range batches {
+		movedCount, createdFolderCount := organizationOperationCounts(batch)
+		response.BatchIds = append(response.BatchIds, batch.ID)
+		response.Timestamps = append(
+			response.Timestamps,
+			batch.PreparedAt.UTC().Format(time.RFC3339),
+		)
+		response.MovedCounts = append(response.MovedCounts, movedCount)
+		response.CreatedFolderCounts = append(
+			response.CreatedFolderCounts,
+			createdFolderCount,
+		)
+		response.Undoable = append(
+			response.Undoable,
+			batch.State == models.FilesystemBatchStateCompleted &&
+				batch.UndoneAt == nil,
+		)
+	}
+	return response, nil
+}
+
+func organizationOperationCounts(
+	batch models.FilesystemOperationBatch,
+) (int, int) {
+	movedCount := 0
+	createdFolderCount := 0
+	for _, operation := range batch.Operations {
+		switch operation.Kind {
+		case models.FilesystemOperationMove:
+			movedCount++
+		case models.FilesystemOperationMkdir:
+			createdFolderCount++
+		}
+	}
+	return movedCount, createdFolderCount
 }
 
 func NewOrganizationController(

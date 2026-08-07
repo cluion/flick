@@ -39,9 +39,12 @@ class FakeBackend implements BackendGateway {
   final List<PreviewRenameRequest> previewRequests = [];
   final List<PreviewOrganizationRequest> organizationPreviewRequests = [];
   final List<ApplyOrganizationRequest> organizationApplyRequests = [];
+  final List<UndoOrganizationRequest> organizationUndoRequests = [];
   OrganizationPlan? lastOrganizationPlan;
   String? organizationItemError;
   bool organizationCrossVolume = false;
+  bool organizationBatchExists = false;
+  bool organizationUndoable = false;
 
   PreviewRenameRequest? get lastPreviewRequest =>
       previewRequests.isEmpty ? null : previewRequests.last;
@@ -54,7 +57,7 @@ class FakeBackend implements BackendGateway {
     return const HealthInfo(
       status: 'ok',
       frameworkVersion: '0.11.0',
-      protocolVersion: 6,
+      protocolVersion: 7,
       runtime: 'Go sidecar',
       architecture: 'Middleware -> Controller -> Service',
     );
@@ -174,11 +177,51 @@ class FakeBackend implements BackendGateway {
     RpcCancellationToken? cancellationToken,
   }) async {
     organizationApplyRequests.add(request);
+    organizationBatchExists = true;
+    organizationUndoable = true;
     return const ApplyOrganizationResult(
       batchId: 'organization-batch-1',
       movedCount: 1,
       createdFolderCount: 1,
       message: 'Created 1 folders and moved 1 files.',
+    );
+  }
+
+  @override
+  Future<UndoOrganizationResult> undoOrganization(
+    UndoOrganizationRequest request, {
+    RpcCancellationToken? cancellationToken,
+  }) async {
+    organizationUndoRequests.add(request);
+    organizationUndoable = false;
+    return const UndoOrganizationResult(
+      batchId: 'organization-batch-1',
+      restoredCount: 1,
+      removedFolderCount: 1,
+      retainedFolderCount: 0,
+      message: 'Restored 1 files and removed 1 empty folder.',
+    );
+  }
+
+  @override
+  Future<OrganizationHistory> organizationHistory({
+    RpcCancellationToken? cancellationToken,
+  }) async {
+    if (!organizationBatchExists) {
+      return const OrganizationHistory(
+        batchIds: [],
+        timestamps: [],
+        movedCounts: [],
+        createdFolderCounts: [],
+        undoable: [],
+      );
+    }
+    return OrganizationHistory(
+      batchIds: const ['organization-batch-1'],
+      timestamps: [DateTime.utc(2026, 8, 8)],
+      movedCounts: const [1],
+      createdFolderCounts: const [1],
+      undoable: [organizationUndoable],
     );
   }
 
@@ -364,7 +407,7 @@ void main() {
     expect(find.text('v0.3.0 (4)'), findsOneWidget);
     expect(find.text('本機引擎就緒'), findsOneWidget);
     expect(
-      find.byTooltip('Go sidecar · Bridra 0.11.0 · Protocol 6'),
+      find.byTooltip('Go sidecar · Bridra 0.11.0 · Protocol 7'),
       findsOneWidget,
     );
     expect(find.text('改名規則'), findsOneWidget);
@@ -608,6 +651,21 @@ void main() {
     );
     expect(find.text('已安全建立 1 個資料夾並移動 1 個檔案'), findsOneWidget);
     expect(find.text('加入檔案，開始規劃資料夾'), findsOneWidget);
+
+    final undoButton = find.byTooltip('復原上一批');
+    expect(undoButton, findsOneWidget);
+    await tester.tap(undoButton);
+    await tester.pumpAndSettle();
+    expect(find.text('復原上一批整理？'), findsOneWidget);
+    expect(find.textContaining('將把 1 個檔案移回原位'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('confirm-organization-undo')));
+    await tester.pumpAndSettle();
+    expect(backend.organizationUndoRequests, hasLength(1));
+    expect(
+      backend.organizationUndoRequests.single.batchId,
+      'organization-batch-1',
+    );
+    expect(find.text('已復原 1 個檔案並移除 1 個空資料夾'), findsOneWidget);
     expect(file.readAsStringSync(), 'original');
     expect(tester.takeException(), isNull);
   });

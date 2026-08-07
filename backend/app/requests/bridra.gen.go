@@ -62,6 +62,26 @@ func (request ApplyOrganizationRequest) Validate() error {
 	return applyOrganizationRequestRules.Validate(request)
 }
 
+type UndoOrganizationRequest struct {
+	BatchId string `json:"batchId"`
+}
+
+func (UndoOrganizationRequest) ValidatePayload(payload []byte) error {
+	return framework.ValidateRequestPayload[UndoOrganizationRequest](payload)
+}
+
+var undoOrganizationRequestRules = framework.NewRuleRegistry[UndoOrganizationRequest](
+	framework.ForField(
+		"batchId",
+		func(request UndoOrganizationRequest) string { return request.BatchId },
+		framework.MinLength(1, "BatchId must be at least 1 character."),
+	),
+)
+
+func (request UndoOrganizationRequest) Validate() error {
+	return undoOrganizationRequestRules.Validate(request)
+}
+
 type PreviewRenameRequest struct {
 	Paths             []string `json:"paths"`
 	Recipe            string   `json:"recipe"`

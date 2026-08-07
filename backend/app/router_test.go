@@ -212,6 +212,70 @@ func TestGeneratedApplicationPreviewsAndAppliesOrganizationPlans(t *testing.T) {
 	if content, err := os.ReadFile(target); err != nil || string(content) != "photo" {
 		t.Fatalf("organization target content=%q err=%v", content, err)
 	}
+	historyResponse := router.Dispatch(context.Background(), framework.Request{
+		ID:     "request-organize-history",
+		Method: contracts.MethodOrganizeHistory,
+		Meta:   map[string]string{"token": "test-token"},
+	})
+	if historyResponse.Error != nil {
+		t.Fatalf("history dispatch error: %v", historyResponse.Error)
+	}
+	encoded, err = json.Marshal(historyResponse.Result)
+	if err != nil {
+		t.Fatalf("marshal history result: %v", err)
+	}
+	var historyResult struct {
+		BatchIDs            []string `json:"batchIds"`
+		MovedCounts         []int    `json:"movedCounts"`
+		CreatedFolderCounts []int    `json:"createdFolderCounts"`
+		Undoable            []bool   `json:"undoable"`
+	}
+	if err := json.Unmarshal(encoded, &historyResult); err != nil {
+		t.Fatalf("unmarshal history result: %v", err)
+	}
+	if len(historyResult.BatchIDs) != 1 ||
+		historyResult.BatchIDs[0] != applyResult.BatchID ||
+		len(historyResult.MovedCounts) != 1 || historyResult.MovedCounts[0] != 1 ||
+		len(historyResult.CreatedFolderCounts) != 1 ||
+		historyResult.CreatedFolderCounts[0] != 1 ||
+		len(historyResult.Undoable) != 1 || !historyResult.Undoable[0] {
+		t.Fatalf("organization history = %#v", historyResult)
+	}
+	undoParams, err := json.Marshal(map[string]any{"batchId": applyResult.BatchID})
+	if err != nil {
+		t.Fatalf("marshal undo params: %v", err)
+	}
+	undoResponse := router.Dispatch(context.Background(), framework.Request{
+		ID:     "request-organize-undo",
+		Method: contracts.MethodOrganizeUndo,
+		Params: undoParams,
+		Meta:   map[string]string{"token": "test-token"},
+	})
+	if undoResponse.Error != nil {
+		t.Fatalf("undo dispatch error: %v", undoResponse.Error)
+	}
+	encoded, err = json.Marshal(undoResponse.Result)
+	if err != nil {
+		t.Fatalf("marshal undo result: %v", err)
+	}
+	var undoResult struct {
+		BatchID            string `json:"batchId"`
+		RestoredCount      int    `json:"restoredCount"`
+		RemovedFolderCount int    `json:"removedFolderCount"`
+	}
+	if err := json.Unmarshal(encoded, &undoResult); err != nil {
+		t.Fatalf("unmarshal undo result: %v", err)
+	}
+	if undoResult.BatchID != applyResult.BatchID || undoResult.RestoredCount != 1 ||
+		undoResult.RemovedFolderCount != 1 {
+		t.Fatalf("organization undo = %#v", undoResult)
+	}
+	if content, err := os.ReadFile(source); err != nil || string(content) != "photo" {
+		t.Fatalf("restored organization source content=%q err=%v", content, err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "Images")); !os.IsNotExist(err) {
+		t.Fatalf("empty organization folder survived undo: %v", err)
+	}
 }
 
 func TestGeneratedApplicationRejectsInvalidToken(t *testing.T) {

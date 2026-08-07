@@ -2,13 +2,15 @@
 
 import 'package:bridra_flutter/bridra_flutter.dart';
 
-const supportedBackendProtocolVersion = 6;
+const supportedBackendProtocolVersion = 7;
 
 abstract final class BridraMethods {
   static const systemHealth = 'system.health';
   static const filesScan = 'files.scan';
   static const organizePreview = 'organize.preview';
   static const organizeApply = 'organize.apply';
+  static const organizeUndo = 'organize.undo';
+  static const organizeHistory = 'organize.history';
   static const renamePreview = 'rename.preview';
   static const renameApply = 'rename.apply';
   static const renameUndo = 'rename.undo';
@@ -158,6 +160,46 @@ class ApplyOrganizationResult {
   final String message;
 }
 
+class UndoOrganizationRequest {
+  const UndoOrganizationRequest({required this.batchId});
+
+  final String batchId;
+
+  Map<String, Object?> toJson() => {'batchId': batchId};
+}
+
+class UndoOrganizationResult {
+  const UndoOrganizationResult({
+    required this.batchId,
+    required this.restoredCount,
+    required this.removedFolderCount,
+    required this.retainedFolderCount,
+    required this.message,
+  });
+
+  final String batchId;
+  final int restoredCount;
+  final int removedFolderCount;
+  final int retainedFolderCount;
+  final String message;
+}
+
+class OrganizationHistory {
+  const OrganizationHistory({
+    required this.batchIds,
+    required this.timestamps,
+    required this.movedCounts,
+    required this.createdFolderCounts,
+    required this.undoable,
+  });
+
+  final List<String> batchIds;
+  final List<DateTime> timestamps;
+  final List<int> movedCounts;
+  final List<int> createdFolderCounts;
+  final List<bool> undoable;
+}
+
 class PreviewRenameRequest {
   const PreviewRenameRequest({
     required this.paths,
@@ -289,6 +331,13 @@ abstract interface class BridraApi {
   });
   Future<ApplyOrganizationResult> applyOrganization(
     ApplyOrganizationRequest request, {
+    RpcCancellationToken? cancellationToken,
+  });
+  Future<UndoOrganizationResult> undoOrganization(
+    UndoOrganizationRequest request, {
+    RpcCancellationToken? cancellationToken,
+  });
+  Future<OrganizationHistory> organizationHistory({
     RpcCancellationToken? cancellationToken,
   });
   Future<RenamePlan> previewRename(
@@ -431,6 +480,62 @@ class BridraRpcApi implements BridraApi {
     } on Object catch (error) {
       throw BackendProtocolException(
         'The organize.apply response does not match the protocol.',
+        cause: error,
+      );
+    }
+  }
+
+  @override
+  Future<UndoOrganizationResult> undoOrganization(
+    UndoOrganizationRequest request, {
+    RpcCancellationToken? cancellationToken,
+  }) async {
+    final reply = await _client.call(
+      BridraMethods.organizeUndo,
+      params: request.toJson(),
+      cancellationToken: cancellationToken,
+    );
+    try {
+      final result = _requireMap(reply.result, 'organize.undo result');
+      return UndoOrganizationResult(
+        batchId: _requireField<String>(result, 'batchId'),
+        restoredCount: _requireField<int>(result, 'restoredCount'),
+        removedFolderCount: _requireField<int>(result, 'removedFolderCount'),
+        retainedFolderCount: _requireField<int>(result, 'retainedFolderCount'),
+        message: _requireField<String>(result, 'message'),
+      );
+    } on BackendProtocolException {
+      rethrow;
+    } on Object catch (error) {
+      throw BackendProtocolException(
+        'The organize.undo response does not match the protocol.',
+        cause: error,
+      );
+    }
+  }
+
+  @override
+  Future<OrganizationHistory> organizationHistory({
+    RpcCancellationToken? cancellationToken,
+  }) async {
+    final reply = await _client.call(
+      BridraMethods.organizeHistory,
+      cancellationToken: cancellationToken,
+    );
+    try {
+      final result = _requireMap(reply.result, 'organize.history result');
+      return OrganizationHistory(
+        batchIds: _requireListField<String>(result, 'batchIds'),
+        timestamps: _requireDateTimeListField(result, 'timestamps'),
+        movedCounts: _requireListField<int>(result, 'movedCounts'),
+        createdFolderCounts: _requireListField<int>(result, 'createdFolderCounts'),
+        undoable: _requireListField<bool>(result, 'undoable'),
+      );
+    } on BackendProtocolException {
+      rethrow;
+    } on Object catch (error) {
+      throw BackendProtocolException(
+        'The organize.history response does not match the protocol.',
         cause: error,
       );
     }

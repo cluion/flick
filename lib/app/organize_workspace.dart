@@ -37,7 +37,7 @@ class OrganizeWorkspace extends StatefulWidget {
   final ValueChanged<String> onCopyPath;
   final ValueChanged<List<XFile>> onDrop;
   final ValueChanged<bool> onApplyingChanged;
-  final ValueChanged<String> onApplied;
+  final Future<void> Function(String) onApplied;
 
   @override
   State<OrganizeWorkspace> createState() => _OrganizeWorkspaceState();
@@ -230,7 +230,7 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
       );
       if (!mounted) return;
       setState(() => _plan = null);
-      widget.onApplied(
+      await widget.onApplied(
         '已安全建立 ${result.createdFolderCount} 個資料夾並移動 ${result.movedCount} 個檔案',
       );
     } on Object catch (error) {

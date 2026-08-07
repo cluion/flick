@@ -47,6 +47,22 @@ type ApplyOrganizationResponse struct {
 	Message            string `json:"message"`
 }
 
+type UndoOrganizationResponse struct {
+	BatchId             string `json:"batchId"`
+	RestoredCount       int    `json:"restoredCount"`
+	RemovedFolderCount  int    `json:"removedFolderCount"`
+	RetainedFolderCount int    `json:"retainedFolderCount"`
+	Message             string `json:"message"`
+}
+
+type OrganizationHistoryResponse struct {
+	BatchIds            []string `json:"batchIds"`
+	Timestamps          []string `json:"timestamps"`
+	MovedCounts         []int    `json:"movedCounts"`
+	CreatedFolderCounts []int    `json:"createdFolderCounts"`
+	Undoable            []bool   `json:"undoable"`
+}
+
 type RenamePlanResponse struct {
 	PlanId            string   `json:"planId"`
 	SourcePaths       []string `json:"sourcePaths"`

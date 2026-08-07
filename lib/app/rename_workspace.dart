@@ -58,6 +58,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   HealthInfo? _health;
   RenamePlan? _plan;
   RenameHistory? _history;
+  OrganizationHistory? _organizationHistory;
   String? _appVersion;
   List<String> _paths = const [];
   final Set<String> _excludedPaths = {};
@@ -118,6 +119,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
       backend = await widget.connector();
       final health = await backend.health();
       final history = await backend.renameHistory();
+      final organizationHistory = await backend.organizationHistory();
       if (!mounted) {
         await backend.close();
         return;
@@ -126,6 +128,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
         _backend = backend;
         _health = health;
         _history = history;
+        _organizationHistory = organizationHistory;
       });
     } on Object catch (error) {
       await backend?.close();
@@ -623,10 +626,19 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     setState(() => _applying = applying);
   }
 
-  void _completeOrganization(String notice) {
+  Future<void> _completeOrganization(String notice) async {
+    OrganizationHistory? history;
+    try {
+      history = await _backend?.organizationHistory();
+    } on Object {
+      // The completed filesystem operation remains valid even if refreshing
+      // the optional header history fails. A reconnect will load it again.
+    }
+    if (!mounted) return;
     _previewGeneration++;
     _previewTimer?.cancel();
     setState(() {
+      if (history != null) _organizationHistory = history;
       _paths = const [];
       _visiblePreviewIndicesCache = null;
       _excludedPaths.clear();
@@ -1356,6 +1368,75 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     }
   }
 
+  Future<void> _undoLatestOrganization() async {
+    final backend = _backend;
+    final history = _organizationHistory;
+    if (backend == null || history == null || _applying) return;
+    final index = history.undoable.indexWhere((undoable) => undoable);
+    if (index < 0) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: surfaceRaised,
+        title: const Text('復原上一批整理？'),
+        content: Text(
+          '將把 ${history.movedCounts[index]} 個檔案移回原位。'
+          'Flick 只會刪除仍為空白的 ${history.createdFolderCounts[index]} 個自建資料夾。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const ValueKey('confirm-organization-undo'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('開始復原'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() {
+      _applying = true;
+      _error = null;
+      _notice = null;
+    });
+    try {
+      final result = await backend.undoOrganization(
+        UndoOrganizationRequest(batchId: history.batchIds[index]),
+      );
+      final refreshed = await backend.organizationHistory();
+      if (!mounted) return;
+      final retainedNotice = result.retainedFolderCount == 0
+          ? ''
+          : '；保留 ${result.retainedFolderCount} 個含有其他內容的資料夾';
+      _previewGeneration++;
+      _previewTimer?.cancel();
+      setState(() {
+        _organizationHistory = refreshed;
+        _notice =
+            '已復原 ${result.restoredCount} 個檔案並移除 ${result.removedFolderCount} 個空資料夾$retainedNotice';
+        _paths = const [];
+        _visiblePreviewIndicesCache = null;
+        _excludedPaths.clear();
+        _nameOverrides.clear();
+        _selectedPaths.clear();
+        _activePath = null;
+        _selectionAnchorIndex = null;
+        _plan = null;
+        _previewing = false;
+        _previewPending = false;
+        _previewFailed = false;
+      });
+    } on Object catch (error) {
+      if (mounted) setState(() => _error = error);
+    } finally {
+      if (mounted) setState(() => _applying = false);
+    }
+  }
+
   @override
   void dispose() {
     _previewTimer?.cancel();
@@ -1370,7 +1451,10 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   @override
   Widget build(BuildContext context) {
     final connected = _health?.status == 'ok';
-    final canUndo = _history?.undoable.any((undoable) => undoable) ?? false;
+    final canUndoRename =
+        _history?.undoable.any((undoable) => undoable) ?? false;
+    final canUndoOrganization =
+        _organizationHistory?.undoable.any((undoable) => undoable) ?? false;
     return DefaultTabController(
       length: 2,
       child: Scaffold(
@@ -1383,9 +1467,13 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                 connected: connected,
                 connecting: _connecting,
                 mode: _workspaceMode,
-                canUndo: canUndo && _workspaceMode == _WorkspaceMode.rename,
+                canUndo: _workspaceMode == _WorkspaceMode.rename
+                    ? canUndoRename
+                    : canUndoOrganization,
                 busy: _applying || _scanning,
-                onUndo: _undoLatest,
+                onUndo: _workspaceMode == _WorkspaceMode.rename
+                    ? _undoLatest
+                    : _undoLatestOrganization,
                 onModeChanged: (mode) => setState(() => _workspaceMode = mode),
               ),
               if (_error != null)
@@ -5203,6 +5291,10 @@ String _friendlyError(Object error) {
       'invalid_regex' => '正規表示式格式不正確，請檢查「尋找」欄位',
       'invalid_condition' => '條件設定不正確，請檢查規則中的條件欄位',
       'invalid_condition_regex' => '條件的正規表示式格式不正確',
+      'batch_not_undoable' => '這一批整理已無法復原',
+      'organization_changed' => '整理後的檔案或資料夾已有變更，為避免覆寫資料，Flick 已停止復原',
+      'organization_undo_rolled_back' => '整理復原失敗，但所有變更都已安全回滾',
+      'organization_recovery_required' => '整理未能完整復原，Flick 已停止後續操作；請保留現場並檢查操作日誌',
       _ => error.message,
     };
   }

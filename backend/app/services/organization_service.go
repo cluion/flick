@@ -35,6 +35,8 @@ type OrganizationService interface {
 	) (models.FilesystemOperationPlan, error)
 	Prepare(planID string) (models.FilesystemOperationBatch, error)
 	Apply(planID string) (models.FilesystemOperationBatch, error)
+	Undo(batchID string) (models.FilesystemOperationBatch, error)
+	History() []models.FilesystemOperationBatch
 }
 
 type filesystemVolumeClassifier func(

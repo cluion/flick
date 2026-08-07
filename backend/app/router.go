@@ -82,6 +82,8 @@ func newRouter(
 	router.Handle(contracts.MethodFilesScan, fileController.Scan)
 	router.Handle(contracts.MethodOrganizePreview, organizationController.Preview)
 	router.Handle(contracts.MethodOrganizeApply, organizationController.Apply)
+	router.Handle(contracts.MethodOrganizeUndo, organizationController.Undo)
+	router.Handle(contracts.MethodOrganizeHistory, organizationController.History)
 	router.Handle(contracts.MethodRenamePreview, renameController.Preview)
 	router.Handle(contracts.MethodRenameApply, renameController.Apply)
 	router.Handle(contracts.MethodRenameUndo, renameController.Undo)

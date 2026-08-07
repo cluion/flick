@@ -87,6 +87,21 @@ class RpcBackend implements BackendGateway {
   }
 
   @override
+  Future<UndoOrganizationResult> undoOrganization(
+    UndoOrganizationRequest request, {
+    RpcCancellationToken? cancellationToken,
+  }) {
+    return _api.undoOrganization(request, cancellationToken: cancellationToken);
+  }
+
+  @override
+  Future<OrganizationHistory> organizationHistory({
+    RpcCancellationToken? cancellationToken,
+  }) {
+    return _api.organizationHistory(cancellationToken: cancellationToken);
+  }
+
+  @override
   Future<RenamePlan> previewRename(
     PreviewRenameRequest request, {
     RpcCancellationToken? cancellationToken,

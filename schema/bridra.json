@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "protocolVersion": 6,
+  "protocolVersion": 7,
   "methods": [
     {
       "name": "system.health",
@@ -101,6 +101,43 @@
           {"name": "movedCount", "type": "integer"},
           {"name": "createdFolderCount", "type": "integer"},
           {"name": "message", "type": "string"}
+        ]
+      }
+    },
+    {
+      "name": "organize.undo",
+      "clientName": "undoOrganization",
+      "params": {
+        "goType": "UndoOrganizationRequest",
+        "dartType": "UndoOrganizationRequest",
+        "fields": [
+          {"name": "batchId", "type": "string", "minLength": 1}
+        ]
+      },
+      "result": {
+        "goType": "UndoOrganizationResponse",
+        "dartType": "UndoOrganizationResult",
+        "fields": [
+          {"name": "batchId", "type": "string"},
+          {"name": "restoredCount", "type": "integer"},
+          {"name": "removedFolderCount", "type": "integer"},
+          {"name": "retainedFolderCount", "type": "integer"},
+          {"name": "message", "type": "string"}
+        ]
+      }
+    },
+    {
+      "name": "organize.history",
+      "clientName": "organizationHistory",
+      "result": {
+        "goType": "OrganizationHistoryResponse",
+        "dartType": "OrganizationHistory",
+        "fields": [
+          {"name": "batchIds", "type": "string", "array": true},
+          {"name": "timestamps", "type": "string", "format": "date-time", "array": true},
+          {"name": "movedCounts", "type": "integer", "array": true},
+          {"name": "createdFolderCounts", "type": "integer", "array": true},
+          {"name": "undoable", "type": "boolean", "array": true}
         ]
       }
     },
