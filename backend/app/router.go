@@ -19,9 +19,33 @@ func NewRouterWithFileTransfers(
 	runtime string,
 	fileTransfers *framework.FileTransferStore,
 ) *framework.Router {
+	return newRouter(
+		token,
+		logs,
+		runtime,
+		fileTransfers,
+		services.NewOrganizationService(),
+	)
+}
+
+func NewRouterWithOrganizationService(
+	token string,
+	logs io.Writer,
+	runtime string,
+	organizationService services.OrganizationService,
+) *framework.Router {
+	return newRouter(token, logs, runtime, nil, organizationService)
+}
+
+func newRouter(
+	token string,
+	logs io.Writer,
+	runtime string,
+	fileTransfers *framework.FileTransferStore,
+	organizationService services.OrganizationService,
+) *framework.Router {
 	renameService := services.NewRenameService()
 	renameController := controllers.NewRenameController(renameService)
-	organizationService := services.NewOrganizationService()
 	organizationController := controllers.NewOrganizationController(
 		organizationService,
 	)
@@ -57,6 +81,7 @@ func NewRouterWithFileTransfers(
 	router.Handle(contracts.MethodSystemHealth, systemController.Health)
 	router.Handle(contracts.MethodFilesScan, fileController.Scan)
 	router.Handle(contracts.MethodOrganizePreview, organizationController.Preview)
+	router.Handle(contracts.MethodOrganizeApply, organizationController.Apply)
 	router.Handle(contracts.MethodRenamePreview, renameController.Preview)
 	router.Handle(contracts.MethodRenameApply, renameController.Apply)
 	router.Handle(contracts.MethodRenameUndo, renameController.Undo)

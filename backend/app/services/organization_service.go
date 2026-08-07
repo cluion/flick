@@ -34,6 +34,7 @@ type OrganizationService interface {
 		items []OrganizationItemInput,
 	) (models.FilesystemOperationPlan, error)
 	Prepare(planID string) (models.FilesystemOperationBatch, error)
+	Apply(planID string) (models.FilesystemOperationBatch, error)
 }
 
 type filesystemVolumeClassifier func(
@@ -49,6 +50,9 @@ type organizationService struct {
 	plans              map[string]models.FilesystemOperationPlan
 	journal            *filesystemJournal
 	journalLoadError   error
+	renamePath         func(string, string) error
+	makeDirectory      func(string, os.FileMode) error
+	removePath         func(string) error
 }
 
 func NewOrganizationService() OrganizationService {
@@ -64,13 +68,20 @@ func NewOrganizationService() OrganizationService {
 func NewOrganizationServiceAt(journalPath string) OrganizationService {
 	journal := newFilesystemJournal(journalPath)
 	journalLoadError := journal.load()
-	return &organizationService{
+	service := &organizationService{
 		now:                time.Now,
 		classifySameVolume: pathsShareFilesystem,
 		plans:              make(map[string]models.FilesystemOperationPlan),
 		journal:            journal,
 		journalLoadError:   journalLoadError,
+		renamePath:         os.Rename,
+		makeDirectory:      os.Mkdir,
+		removePath:         os.Remove,
 	}
+	if journalLoadError == nil {
+		service.journalLoadError = service.recoverIncompleteBatches()
+	}
+	return service
 }
 
 func (service *organizationService) Preview(
@@ -490,7 +501,12 @@ func (service *organizationService) Prepare(
 ) (models.FilesystemOperationBatch, error) {
 	service.mu.Lock()
 	defer service.mu.Unlock()
+	return service.prepareLocked(planID)
+}
 
+func (service *organizationService) prepareLocked(
+	planID string,
+) (models.FilesystemOperationBatch, error) {
 	service.expirePlans()
 	plan, exists := service.plans[strings.TrimSpace(planID)]
 	if !exists {

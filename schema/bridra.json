@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "protocolVersion": 5,
+  "protocolVersion": 6,
   "methods": [
     {
       "name": "system.health",
@@ -80,6 +80,27 @@
           {"name": "unchangedCount", "type": "integer"},
           {"name": "errorCount", "type": "integer"},
           {"name": "crossVolumeCount", "type": "integer"}
+        ]
+      }
+    },
+    {
+      "name": "organize.apply",
+      "clientName": "applyOrganization",
+      "params": {
+        "goType": "ApplyOrganizationRequest",
+        "dartType": "ApplyOrganizationRequest",
+        "fields": [
+          {"name": "planId", "type": "string", "minLength": 1}
+        ]
+      },
+      "result": {
+        "goType": "ApplyOrganizationResponse",
+        "dartType": "ApplyOrganizationResult",
+        "fields": [
+          {"name": "batchId", "type": "string"},
+          {"name": "movedCount", "type": "integer"},
+          {"name": "createdFolderCount", "type": "integer"},
+          {"name": "message", "type": "string"}
         ]
       }
     },

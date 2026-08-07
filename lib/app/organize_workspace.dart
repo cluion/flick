@@ -22,6 +22,8 @@ class OrganizeWorkspace extends StatefulWidget {
     required this.onRevealPath,
     required this.onCopyPath,
     required this.onDrop,
+    required this.onApplyingChanged,
+    required this.onApplied,
   });
 
   final List<String> paths;
@@ -34,6 +36,8 @@ class OrganizeWorkspace extends StatefulWidget {
   final ValueChanged<String> onRevealPath;
   final ValueChanged<String> onCopyPath;
   final ValueChanged<List<XFile>> onDrop;
+  final ValueChanged<bool> onApplyingChanged;
+  final ValueChanged<String> onApplied;
 
   @override
   State<OrganizeWorkspace> createState() => _OrganizeWorkspaceState();
@@ -51,6 +55,7 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
   Timer? _previewTimer;
   var _previewGeneration = 0;
   var _previewing = false;
+  var _applying = false;
   var _rootWasExplicit = false;
   var _draggingExternal = false;
 
@@ -111,7 +116,8 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
     final generation = ++_previewGeneration;
     final backend = widget.backend;
     final rootPath = _rootPath;
-    if (!widget.active ||
+    if (_applying ||
+        !widget.active ||
         backend == null ||
         rootPath == null ||
         _draft.items.isEmpty) {
@@ -173,6 +179,67 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
       if (mounted && generation == _previewGeneration) {
         setState(() => _previewing = false);
       }
+    }
+  }
+
+  Future<void> _apply() async {
+    final backend = widget.backend;
+    final plan = _plan;
+    if (backend == null ||
+        plan == null ||
+        plan.errorCount > 0 ||
+        plan.crossVolumeCount > 0 ||
+        (plan.mkdirCount == 0 && plan.moveCount == 0) ||
+        _previewing ||
+        _applying) {
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: surfaceRaised,
+        title: const Text('套用檔案整理？'),
+        content: Text(
+          '將建立 ${plan.mkdirCount} 個資料夾並移動 ${plan.moveCount} 個檔案。'
+          'Flick 會在動作前重新驗證，失敗時自動回滾。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const ValueKey('confirm-organization-apply'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('開始整理'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() {
+      _applying = true;
+      _error = null;
+      _notice = null;
+    });
+    widget.onApplyingChanged(true);
+    try {
+      final result = await backend.applyOrganization(
+        ApplyOrganizationRequest(planId: plan.planId),
+      );
+      if (!mounted) return;
+      setState(() => _plan = null);
+      widget.onApplied(
+        '已安全建立 ${result.createdFolderCount} 個資料夾並移動 ${result.movedCount} 個檔案',
+      );
+    } on Object catch (error) {
+      if (mounted) {
+        setState(() => _error = _friendlyOrganizationError(error));
+      }
+    } finally {
+      if (mounted) setState(() => _applying = false);
+      widget.onApplyingChanged(false);
     }
   }
 
@@ -259,6 +326,7 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
 
   @override
   Widget build(BuildContext context) {
+    final workspaceEnabled = widget.enabled && !_applying;
     final selectedItems = _draft.itemsInFolder(_selectedFolderId);
     final localMoveCount = _draft.items
         .where((item) => item.destinationFolderId != null)
@@ -271,11 +339,13 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
     final errorCount = plan?.errorCount ?? (rootMissing ? localMoveCount : 0);
 
     return desktop_drop.DropTarget(
-      onDragEntered: (_) => setState(() => _draggingExternal = true),
+      onDragEntered: (_) {
+        if (workspaceEnabled) setState(() => _draggingExternal = true);
+      },
       onDragExited: (_) => setState(() => _draggingExternal = false),
       onDragDone: (details) {
         setState(() => _draggingExternal = false);
-        widget.onDrop(details.files);
+        if (workspaceEnabled) widget.onDrop(details.files);
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 160),
@@ -283,7 +353,7 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
         child: Column(
           children: [
             _OrganizeToolbar(
-              enabled: widget.enabled,
+              enabled: workspaceEnabled,
               scanning: widget.scanning,
               onChooseFiles: widget.onChooseFiles,
               onChooseDirectory: widget.onChooseDirectory,
@@ -305,7 +375,7 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
             if (widget.paths.isEmpty)
               Expanded(
                 child: _OrganizationEmptyState(
-                  enabled: widget.enabled,
+                  enabled: workspaceEnabled,
                   dragging: _draggingExternal,
                   onChooseFiles: widget.onChooseFiles,
                   onChooseDirectory: widget.onChooseDirectory,
@@ -316,7 +386,7 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
                 rootPath: _rootPath,
                 rootMissing: rootMissing,
                 verified: plan != null && !_previewing,
-                enabled: widget.enabled,
+                enabled: workspaceEnabled,
                 onChooseRoot: () => unawaited(_chooseRoot()),
               ),
               Expanded(
@@ -328,7 +398,7 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
                         draft: _draft,
                         plan: plan,
                         selectedFolderId: _selectedFolderId,
-                        enabled: widget.enabled,
+                        enabled: workspaceEnabled,
                         onSelectFolder: (folderId) =>
                             setState(() => _selectedFolderId = folderId),
                         onMoveItem: _moveItem,
@@ -345,7 +415,7 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
                         folderId: _selectedFolderId,
                         items: selectedItems,
                         rootPath: _rootPath,
-                        enabled: widget.enabled,
+                        enabled: workspaceEnabled,
                         onRevealPath: widget.onRevealPath,
                         onCopyPath: widget.onCopyPath,
                       ),
@@ -360,6 +430,15 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
                 crossVolumeCount: plan?.crossVolumeCount ?? 0,
                 errorCount: errorCount,
                 previewing: _previewing,
+                applying: _applying,
+                canApply:
+                    workspaceEnabled &&
+                    plan != null &&
+                    !_previewing &&
+                    plan.errorCount == 0 &&
+                    plan.crossVolumeCount == 0 &&
+                    (plan.mkdirCount > 0 || plan.moveCount > 0),
+                onApply: () => unawaited(_apply()),
               ),
             ],
           ],
@@ -1024,6 +1103,9 @@ class _OrganizationActionBar extends StatelessWidget {
     required this.crossVolumeCount,
     required this.errorCount,
     required this.previewing,
+    required this.applying,
+    required this.canApply,
+    required this.onApply,
   });
 
   final int folderCount;
@@ -1032,6 +1114,9 @@ class _OrganizationActionBar extends StatelessWidget {
   final int crossVolumeCount;
   final int errorCount;
   final bool previewing;
+  final bool applying;
+  final bool canApply;
+  final VoidCallback onApply;
 
   @override
   Widget build(BuildContext context) {
@@ -1063,16 +1148,27 @@ class _OrganizationActionBar extends StatelessWidget {
           ],
           const Spacer(),
           Tooltip(
-            message: '這一階段只建立整理預覽；安全套用與復原會在共享操作計畫完成後開放',
+            message: crossVolumeCount > 0
+                ? '跨磁碟搬移尚未開放；請改用同一個磁碟的整理根目錄'
+                : errorCount > 0
+                ? '請先修正所有待處理項目'
+                : '套用前會重新驗證，執行失敗會自動回滾',
             child: FilledButton.icon(
-              onPressed: null,
-              icon: previewing
+              key: const ValueKey('apply-organization'),
+              onPressed: canApply ? onApply : null,
+              icon: previewing || applying
                   ? const SizedBox.square(
                       dimension: 15,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : const Icon(Icons.verified_user_outlined, size: 17),
-              label: Text(previewing ? '驗證中' : '安全預覽'),
+                  : const Icon(Icons.drive_file_move_outline, size: 17),
+              label: Text(
+                previewing
+                    ? '驗證中'
+                    : applying
+                    ? '正在整理…'
+                    : '開始整理',
+              ),
             ),
           ),
         ],
@@ -1351,6 +1447,15 @@ String _friendlyOrganizationError(Object error) {
       'empty_selection' => '請先加入至少一個檔案',
       'too_many_items' => '整理項目超過上限，請縮小範圍',
       'too_many_folders' => '虛擬資料夾數量超過上限',
+      'plan_expired' => '整理預覽已過期，請稍候重新預覽後再試',
+      'invalid_plan' => '請先修正所有整理預覽錯誤',
+      'nothing_to_organize' => '目前沒有需要套用的整理動作',
+      'source_changed' => '來源檔案在預覽後有變更，請重新確認整理結果',
+      'target_changed' => '目的路徑在預覽後有變更，已停止並回滾整理',
+      'plan_changed' => '磁碟或整理位置已變更，請重新確認整理結果',
+      'cross_volume_unsupported' => '目前只支援同磁碟整理；跨磁碟搬移尚未開放',
+      'organization_apply_rolled_back' => '整理執行失敗，但所有檔案與新資料夾都已安全回滾',
+      'organization_recovery_required' => '整理未能完整復原，Flick 已停止後續套用；請保留現場並檢查操作日誌',
       _ => error.message,
     };
   }

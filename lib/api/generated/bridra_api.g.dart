@@ -2,12 +2,13 @@
 
 import 'package:bridra_flutter/bridra_flutter.dart';
 
-const supportedBackendProtocolVersion = 5;
+const supportedBackendProtocolVersion = 6;
 
 abstract final class BridraMethods {
   static const systemHealth = 'system.health';
   static const filesScan = 'files.scan';
   static const organizePreview = 'organize.preview';
+  static const organizeApply = 'organize.apply';
   static const renamePreview = 'rename.preview';
   static const renameApply = 'rename.apply';
   static const renameUndo = 'rename.undo';
@@ -133,6 +134,28 @@ class OrganizationPlan {
   final int unchangedCount;
   final int errorCount;
   final int crossVolumeCount;
+}
+
+class ApplyOrganizationRequest {
+  const ApplyOrganizationRequest({required this.planId});
+
+  final String planId;
+
+  Map<String, Object?> toJson() => {'planId': planId};
+}
+
+class ApplyOrganizationResult {
+  const ApplyOrganizationResult({
+    required this.batchId,
+    required this.movedCount,
+    required this.createdFolderCount,
+    required this.message,
+  });
+
+  final String batchId;
+  final int movedCount;
+  final int createdFolderCount;
+  final String message;
 }
 
 class PreviewRenameRequest {
@@ -264,6 +287,10 @@ abstract interface class BridraApi {
     PreviewOrganizationRequest request, {
     RpcCancellationToken? cancellationToken,
   });
+  Future<ApplyOrganizationResult> applyOrganization(
+    ApplyOrganizationRequest request, {
+    RpcCancellationToken? cancellationToken,
+  });
   Future<RenamePlan> previewRename(
     PreviewRenameRequest request, {
     RpcCancellationToken? cancellationToken,
@@ -376,6 +403,34 @@ class BridraRpcApi implements BridraApi {
     } on Object catch (error) {
       throw BackendProtocolException(
         'The organize.preview response does not match the protocol.',
+        cause: error,
+      );
+    }
+  }
+
+  @override
+  Future<ApplyOrganizationResult> applyOrganization(
+    ApplyOrganizationRequest request, {
+    RpcCancellationToken? cancellationToken,
+  }) async {
+    final reply = await _client.call(
+      BridraMethods.organizeApply,
+      params: request.toJson(),
+      cancellationToken: cancellationToken,
+    );
+    try {
+      final result = _requireMap(reply.result, 'organize.apply result');
+      return ApplyOrganizationResult(
+        batchId: _requireField<String>(result, 'batchId'),
+        movedCount: _requireField<int>(result, 'movedCount'),
+        createdFolderCount: _requireField<int>(result, 'createdFolderCount'),
+        message: _requireField<String>(result, 'message'),
+      );
+    } on BackendProtocolException {
+      rethrow;
+    } on Object catch (error) {
+      throw BackendProtocolException(
+        'The organize.apply response does not match the protocol.',
         cause: error,
       );
     }

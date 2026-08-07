@@ -38,6 +38,8 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 class FakeBackend implements BackendGateway {
   final List<PreviewRenameRequest> previewRequests = [];
   final List<PreviewOrganizationRequest> organizationPreviewRequests = [];
+  final List<ApplyOrganizationRequest> organizationApplyRequests = [];
+  OrganizationPlan? lastOrganizationPlan;
   String? organizationItemError;
   bool organizationCrossVolume = false;
 
@@ -52,7 +54,7 @@ class FakeBackend implements BackendGateway {
     return const HealthInfo(
       status: 'ok',
       frameworkVersion: '0.11.0',
-      protocolVersion: 5,
+      protocolVersion: 6,
       runtime: 'Go sidecar',
       architecture: 'Middleware -> Controller -> Service',
     );
@@ -132,7 +134,7 @@ class FakeBackend implements BackendGateway {
           operationKinds[index] == 'move' &&
           organizationCrossVolume,
     ).where((value) => value).length;
-    return OrganizationPlan(
+    final plan = OrganizationPlan(
       planId: 'organization-plan-1',
       rootPath: request.rootPath,
       folderIds: request.folderIds,
@@ -161,6 +163,22 @@ class FakeBackend implements BackendGateway {
       unchangedCount: unchangedCount,
       errorCount: errorCount,
       crossVolumeCount: crossVolumeCount,
+    );
+    lastOrganizationPlan = plan;
+    return plan;
+  }
+
+  @override
+  Future<ApplyOrganizationResult> applyOrganization(
+    ApplyOrganizationRequest request, {
+    RpcCancellationToken? cancellationToken,
+  }) async {
+    organizationApplyRequests.add(request);
+    return const ApplyOrganizationResult(
+      batchId: 'organization-batch-1',
+      movedCount: 1,
+      createdFolderCount: 1,
+      message: 'Created 1 folders and moved 1 files.',
     );
   }
 
@@ -346,7 +364,7 @@ void main() {
     expect(find.text('v0.3.0 (4)'), findsOneWidget);
     expect(find.text('本機引擎就緒'), findsOneWidget);
     expect(
-      find.byTooltip('Go sidecar · Bridra 0.11.0 · Protocol 5'),
+      find.byTooltip('Go sidecar · Bridra 0.11.0 · Protocol 6'),
       findsOneWidget,
     );
     expect(find.text('改名規則'), findsOneWidget);
@@ -530,12 +548,112 @@ void main() {
     expect(find.text('最終路徑已被其他項目占用'), findsOneWidget);
     expect(find.text('待處理'), findsOneWidget);
     expect(find.text('1 待處理'), findsOneWidget);
-    expect(find.text('安全預覽'), findsOneWidget);
+    expect(find.text('開始整理'), findsOneWidget);
     expect(file.readAsStringSync(), 'original');
     expect(
       Directory(joinOrganizationPath(directory.path, '圖片')).existsSync(),
       isFalse,
     );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('confirms and applies a same-volume organization plan', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(800, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final directory = Directory.systemTemp.createTempSync('flick-apply-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final file = File('${directory.path}/photo.jpg')
+      ..writeAsStringSync('original');
+    final backend = FakeBackend();
+
+    await tester.pumpWidget(FlickApp(connector: () async => backend));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('workspace-mode-organize')));
+    await tester.pumpAndSettle();
+    await _dropFile(tester, file.path, backend);
+    await _pumpAsyncWork(tester);
+    await tester.tap(find.byKey(const ValueKey('organization-new-folder')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('virtual-folder-name-field')),
+      '圖片',
+    );
+    await tester.tap(find.text('建立'));
+    await tester.pumpAndSettle();
+    await _dragTo(
+      tester,
+      find.byKey(const ValueKey('organization-item-0')),
+      find.byKey(const ValueKey('organization-folder-0')),
+    );
+    await tester.pumpAndSettle();
+
+    final applyButton = find.byKey(const ValueKey('apply-organization'));
+    expect(tester.widget<FilledButton>(applyButton).onPressed, isNotNull);
+    await tester.tap(applyButton);
+    await tester.pumpAndSettle();
+    expect(find.text('套用檔案整理？'), findsOneWidget);
+    expect(find.textContaining('建立 1 個資料夾並移動 1 個檔案'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('confirm-organization-apply')));
+    await tester.pumpAndSettle();
+
+    expect(backend.organizationApplyRequests, hasLength(1));
+    expect(
+      backend.organizationApplyRequests.single.planId,
+      'organization-plan-1',
+    );
+    expect(find.text('已安全建立 1 個資料夾並移動 1 個檔案'), findsOneWidget);
+    expect(find.text('加入檔案，開始規劃資料夾'), findsOneWidget);
+    expect(file.readAsStringSync(), 'original');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('keeps cross-volume organization apply disabled', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(800, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final directory = Directory.systemTemp.createTempSync('flick-cross-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final file = File('${directory.path}/photo.jpg')
+      ..writeAsStringSync('original');
+    final backend = FakeBackend()..organizationCrossVolume = true;
+
+    await tester.pumpWidget(FlickApp(connector: () async => backend));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('workspace-mode-organize')));
+    await tester.pumpAndSettle();
+    await _dropFile(tester, file.path, backend);
+    await _pumpAsyncWork(tester);
+    await tester.tap(find.byKey(const ValueKey('organization-new-folder')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('virtual-folder-name-field')),
+      '圖片',
+    );
+    await tester.tap(find.text('建立'));
+    await tester.pumpAndSettle();
+    await _dragTo(
+      tester,
+      find.byKey(const ValueKey('organization-item-0')),
+      find.byKey(const ValueKey('organization-folder-0')),
+    );
+    await _pumpAsyncWork(tester);
+
+    expect(backend.organizationPreviewRequests.last.destinationFolderIds, [
+      'organization-folder-0',
+    ]);
+    expect(backend.lastOrganizationPlan?.crossVolumeCount, 1);
+    expect(find.text('1 跨磁碟'), findsOneWidget);
+    final applyButton = find.byKey(const ValueKey('apply-organization'));
+    expect(tester.widget<FilledButton>(applyButton).onPressed, isNull);
+    expect(backend.organizationApplyRequests, isEmpty);
+    expect(file.readAsStringSync(), 'original');
     expect(tester.takeException(), isNull);
   });
 

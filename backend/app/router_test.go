@@ -10,10 +10,11 @@ import (
 	"github.com/cluion/bridra/backend/framework"
 	"github.com/cluion/flick/backend/app"
 	"github.com/cluion/flick/backend/app/contracts"
+	"github.com/cluion/flick/backend/app/services"
 )
 
 func TestGeneratedApplicationPipeline(t *testing.T) {
-	router := app.NewRouter("test-token", nil, "test")
+	router := newTestRouter(t)
 	directory := t.TempDir()
 	path := filepath.Join(directory, "draft report.txt")
 	if err := os.WriteFile(path, []byte("draft"), 0o600); err != nil {
@@ -72,7 +73,7 @@ func TestGeneratedApplicationPipeline(t *testing.T) {
 }
 
 func TestGeneratedApplicationScansDirectories(t *testing.T) {
-	router := app.NewRouter("test-token", nil, "test")
+	router := newTestRouter(t)
 	directory := t.TempDir()
 	path := filepath.Join(directory, "photo.jpg")
 	if err := os.WriteFile(path, []byte("photo"), 0o600); err != nil {
@@ -111,9 +112,16 @@ func TestGeneratedApplicationScansDirectories(t *testing.T) {
 	}
 }
 
-func TestGeneratedApplicationPreviewsOrganizationPlans(t *testing.T) {
-	router := app.NewRouter("test-token", nil, "test")
+func TestGeneratedApplicationPreviewsAndAppliesOrganizationPlans(t *testing.T) {
 	root := t.TempDir()
+	router := app.NewRouterWithOrganizationService(
+		"test-token",
+		nil,
+		"test",
+		services.NewOrganizationServiceAt(
+			filepath.Join(t.TempDir(), "operation-history.json"),
+		),
+	)
 	source := filepath.Join(root, "photo.jpg")
 	if err := os.WriteFile(source, []byte("photo"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -143,6 +151,7 @@ func TestGeneratedApplicationPreviewsOrganizationPlans(t *testing.T) {
 		t.Fatalf("marshal result: %v", err)
 	}
 	var result struct {
+		PlanID             string   `json:"planId"`
 		TargetPaths        []string `json:"targetPaths"`
 		FolderCreated      []bool   `json:"folderCreated"`
 		ItemStatuses       []string `json:"itemStatuses"`
@@ -155,7 +164,7 @@ func TestGeneratedApplicationPreviewsOrganizationPlans(t *testing.T) {
 	if err := json.Unmarshal(encoded, &result); err != nil {
 		t.Fatalf("unmarshal result: %v", err)
 	}
-	if len(result.TargetPaths) != 1 ||
+	if result.PlanID == "" || len(result.TargetPaths) != 1 ||
 		result.TargetPaths[0] != filepath.Join(root, "Images", "photo.jpg") ||
 		len(result.FolderCreated) != 1 || !result.FolderCreated[0] ||
 		len(result.ItemStatuses) != 1 || result.ItemStatuses[0] != "ready" ||
@@ -167,10 +176,46 @@ func TestGeneratedApplicationPreviewsOrganizationPlans(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(root, "Images")); !os.IsNotExist(err) {
 		t.Fatalf("preview created destination: %v", err)
 	}
+	applyParams, err := json.Marshal(map[string]any{"planId": result.PlanID})
+	if err != nil {
+		t.Fatalf("marshal apply params: %v", err)
+	}
+	applyResponse := router.Dispatch(context.Background(), framework.Request{
+		ID:     "request-organize-apply",
+		Method: contracts.MethodOrganizeApply,
+		Params: applyParams,
+		Meta:   map[string]string{"token": "test-token"},
+	})
+	if applyResponse.Error != nil {
+		t.Fatalf("apply dispatch error: %v", applyResponse.Error)
+	}
+	encoded, err = json.Marshal(applyResponse.Result)
+	if err != nil {
+		t.Fatalf("marshal apply result: %v", err)
+	}
+	var applyResult struct {
+		BatchID            string `json:"batchId"`
+		MovedCount         int    `json:"movedCount"`
+		CreatedFolderCount int    `json:"createdFolderCount"`
+	}
+	if err := json.Unmarshal(encoded, &applyResult); err != nil {
+		t.Fatalf("unmarshal apply result: %v", err)
+	}
+	if applyResult.BatchID == "" || applyResult.MovedCount != 1 ||
+		applyResult.CreatedFolderCount != 1 {
+		t.Fatalf("organization apply = %#v", applyResult)
+	}
+	if _, err := os.Lstat(source); !os.IsNotExist(err) {
+		t.Fatalf("organization source still exists: %v", err)
+	}
+	target := filepath.Join(root, "Images", "photo.jpg")
+	if content, err := os.ReadFile(target); err != nil || string(content) != "photo" {
+		t.Fatalf("organization target content=%q err=%v", content, err)
+	}
 }
 
 func TestGeneratedApplicationRejectsInvalidToken(t *testing.T) {
-	router := app.NewRouter("test-token", nil, "test")
+	router := newTestRouter(t)
 	response := router.Dispatch(context.Background(), framework.Request{
 		ID:     "request-2",
 		Method: contracts.MethodSystemHealth,
@@ -179,4 +224,16 @@ func TestGeneratedApplicationRejectsInvalidToken(t *testing.T) {
 	if response.Error == nil || response.Error.Code != "unauthorized" {
 		t.Fatalf("response error = %#v, want unauthorized", response.Error)
 	}
+}
+
+func newTestRouter(t *testing.T) *framework.Router {
+	t.Helper()
+	return app.NewRouterWithOrganizationService(
+		"test-token",
+		nil,
+		"test",
+		services.NewOrganizationServiceAt(
+			filepath.Join(t.TempDir(), "operation-history.json"),
+		),
+	)
 }

@@ -40,6 +40,13 @@ type OrganizationPlanResponse struct {
 	CrossVolumeCount   int      `json:"crossVolumeCount"`
 }
 
+type ApplyOrganizationResponse struct {
+	BatchId            string `json:"batchId"`
+	MovedCount         int    `json:"movedCount"`
+	CreatedFolderCount int    `json:"createdFolderCount"`
+	Message            string `json:"message"`
+}
+
 type RenamePlanResponse struct {
 	PlanId            string   `json:"planId"`
 	SourcePaths       []string `json:"sourcePaths"`

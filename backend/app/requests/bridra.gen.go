@@ -42,6 +42,26 @@ func (request PreviewOrganizationRequest) Validate() error {
 	return previewOrganizationRequestRules.Validate(request)
 }
 
+type ApplyOrganizationRequest struct {
+	PlanId string `json:"planId"`
+}
+
+func (ApplyOrganizationRequest) ValidatePayload(payload []byte) error {
+	return framework.ValidateRequestPayload[ApplyOrganizationRequest](payload)
+}
+
+var applyOrganizationRequestRules = framework.NewRuleRegistry[ApplyOrganizationRequest](
+	framework.ForField(
+		"planId",
+		func(request ApplyOrganizationRequest) string { return request.PlanId },
+		framework.MinLength(1, "PlanId must be at least 1 character."),
+	),
+)
+
+func (request ApplyOrganizationRequest) Validate() error {
+	return applyOrganizationRequestRules.Validate(request)
+}
+
 type PreviewRenameRequest struct {
 	Paths             []string `json:"paths"`
 	Recipe            string   `json:"recipe"`

@@ -14,6 +14,8 @@ const (
 	RouteActionFilesScan       = "scan"
 	MethodOrganizePreview      = "organize.preview"
 	RouteActionOrganizePreview = "preview"
+	MethodOrganizeApply        = "organize.apply"
+	RouteActionOrganizeApply   = "apply"
 	MethodRenamePreview        = "rename.preview"
 	RouteActionRenamePreview   = "preview"
 	MethodRenameApply          = "rename.apply"

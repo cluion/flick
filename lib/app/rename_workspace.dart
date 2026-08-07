@@ -618,6 +618,31 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     });
   }
 
+  void _setOrganizationApplying(bool applying) {
+    if (!mounted || _applying == applying) return;
+    setState(() => _applying = applying);
+  }
+
+  void _completeOrganization(String notice) {
+    _previewGeneration++;
+    _previewTimer?.cancel();
+    setState(() {
+      _paths = const [];
+      _visiblePreviewIndicesCache = null;
+      _excludedPaths.clear();
+      _nameOverrides.clear();
+      _selectedPaths.clear();
+      _activePath = null;
+      _selectionAnchorIndex = null;
+      _plan = null;
+      _error = null;
+      _notice = notice;
+      _previewing = false;
+      _previewPending = false;
+      _previewFailed = false;
+    });
+  }
+
   void _setPathIncluded(String path, bool included) {
     _setPathsIncluded([path], included);
   }
@@ -1504,6 +1529,8 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                       onRevealPath: _revealPath,
                       onCopyPath: _copyPath,
                       onDrop: (files) => unawaited(_handleDroppedItems(files)),
+                      onApplyingChanged: _setOrganizationApplying,
+                      onApplied: _completeOrganization,
                     ),
                   ],
                 ),

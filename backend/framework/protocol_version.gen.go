@@ -2,4 +2,4 @@
 
 package framework
 
-const ProtocolVersion = 5
+const ProtocolVersion = 6

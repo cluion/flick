@@ -15,7 +15,7 @@ import (
 func TestOrganizationServiceBuildsPreviewOnlyOperationDependencies(t *testing.T) {
 	root := t.TempDir()
 	source := writeOrganizationFixture(t, filepath.Join(root, "photo.jpg"))
-	service := NewOrganizationService()
+	service := newOrganizationServiceForTest(t)
 
 	plan, err := service.Preview(
 		root,
@@ -69,7 +69,7 @@ func TestOrganizationServiceReusesExistingFoldersWithoutMkdir(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	source := writeOrganizationFixture(t, filepath.Join(root, "photo.jpg"))
-	service := NewOrganizationService()
+	service := newOrganizationServiceForTest(t)
 
 	plan, err := service.Preview(
 		root,
@@ -106,7 +106,7 @@ func TestOrganizationServiceRejectsDuplicateAndOccupiedTargets(t *testing.T) {
 	}
 	first := writeOrganizationFixture(t, filepath.Join(firstDirectory, "same.txt"))
 	second := writeOrganizationFixture(t, filepath.Join(secondDirectory, "same.txt"))
-	service := NewOrganizationService()
+	service := newOrganizationServiceForTest(t)
 
 	plan, err := service.Preview(
 		root,
@@ -161,7 +161,7 @@ func TestOrganizationServiceAllowsTargetsMovedAwayByTheSamePlan(t *testing.T) {
 	}
 	left := writeOrganizationFixture(t, filepath.Join(leftDirectory, "same.txt"))
 	right := writeOrganizationFixture(t, filepath.Join(rightDirectory, "same.txt"))
-	service := NewOrganizationService()
+	service := newOrganizationServiceForTest(t)
 
 	plan, err := service.Preview(
 		root,
@@ -200,7 +200,7 @@ func TestOrganizationServicePropagatesBlockedOccupiedTargets(t *testing.T) {
 	left := writeOrganizationFixture(t, filepath.Join(leftDirectory, "same.txt"))
 	right := writeOrganizationFixture(t, filepath.Join(rightDirectory, "same.txt"))
 	writeOrganizationFixture(t, filepath.Join(blockedDirectory, "same.txt"))
-	service := NewOrganizationService()
+	service := newOrganizationServiceForTest(t)
 
 	plan, err := service.Preview(
 		root,
@@ -257,7 +257,7 @@ func TestOrganizationServiceClassifiesCrossVolumeMoves(t *testing.T) {
 func TestOrganizationServiceValidatesConfigurationAndFolderNames(t *testing.T) {
 	root := t.TempDir()
 	source := writeOrganizationFixture(t, filepath.Join(root, "photo.jpg"))
-	service := NewOrganizationService()
+	service := newOrganizationServiceForTest(t)
 
 	_, err := service.Preview(
 		root,
@@ -485,6 +485,409 @@ func TestOrganizationServiceExpiresPreviewBeforePrepare(t *testing.T) {
 	assertOrganizationUserErrorCode(t, err, "plan_expired")
 }
 
+func TestOrganizationServiceAppliesSameVolumeBatch(t *testing.T) {
+	root := t.TempDir()
+	source := writeOrganizationFixture(t, filepath.Join(root, "photo.jpg"))
+	journalPath := filepath.Join(t.TempDir(), "operation-history.json")
+	service := NewOrganizationServiceAt(journalPath).(*organizationService)
+	plan, err := service.Preview(
+		root,
+		[]OrganizationFolderInput{{ID: "photos", Name: "Images"}},
+		[]OrganizationItemInput{{
+			ID:                  "item-1",
+			SourcePath:          source,
+			DestinationFolderID: "photos",
+		}},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	batch, err := service.Apply(plan.ID)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	target := filepath.Join(root, "Images", "photo.jpg")
+	if batch.State != models.FilesystemBatchStateCompleted ||
+		batch.CompletedAt == nil || len(batch.Operations) != 2 {
+		t.Fatalf("batch = %#v", batch)
+	}
+	if _, err := os.Lstat(source); !os.IsNotExist(err) {
+		t.Fatalf("source still exists: %v", err)
+	}
+	if content, err := os.ReadFile(target); err != nil || string(content) != "fixture" {
+		t.Fatalf("target content=%q err=%v", content, err)
+	}
+	if len(service.journal.batches) != 1 ||
+		service.journal.batches[0].State != models.FilesystemBatchStateCompleted {
+		t.Fatalf("journal batches = %#v", service.journal.batches)
+	}
+}
+
+func TestOrganizationServiceAppliesSwapThroughStaging(t *testing.T) {
+	root := t.TempDir()
+	leftDirectory := filepath.Join(root, "Left")
+	rightDirectory := filepath.Join(root, "Right")
+	if err := os.Mkdir(leftDirectory, 0o700); err != nil {
+		t.Fatalf("mkdir left: %v", err)
+	}
+	if err := os.Mkdir(rightDirectory, 0o700); err != nil {
+		t.Fatalf("mkdir right: %v", err)
+	}
+	left := filepath.Join(leftDirectory, "same.txt")
+	right := filepath.Join(rightDirectory, "same.txt")
+	if err := os.WriteFile(left, []byte("left"), 0o600); err != nil {
+		t.Fatalf("write left: %v", err)
+	}
+	if err := os.WriteFile(right, []byte("right"), 0o600); err != nil {
+		t.Fatalf("write right: %v", err)
+	}
+	service := NewOrganizationServiceAt(
+		filepath.Join(t.TempDir(), "operation-history.json"),
+	)
+	plan, err := service.Preview(
+		root,
+		[]OrganizationFolderInput{
+			{ID: "left", Name: "Left"},
+			{ID: "right", Name: "Right"},
+		},
+		[]OrganizationItemInput{
+			{ID: "left-item", SourcePath: left, DestinationFolderID: "right"},
+			{ID: "right-item", SourcePath: right, DestinationFolderID: "left"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if _, err := service.Apply(plan.ID); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	leftContent, leftErr := os.ReadFile(left)
+	rightContent, rightErr := os.ReadFile(right)
+	if leftErr != nil || rightErr != nil || string(leftContent) != "right" ||
+		string(rightContent) != "left" {
+		t.Fatalf(
+			"swap left=%q right=%q leftErr=%v rightErr=%v",
+			leftContent,
+			rightContent,
+			leftErr,
+			rightErr,
+		)
+	}
+}
+
+func TestOrganizationServiceRollsBackFailedCommit(t *testing.T) {
+	root := t.TempDir()
+	source := writeOrganizationFixture(t, filepath.Join(root, "photo.jpg"))
+	service := NewOrganizationServiceAt(
+		filepath.Join(t.TempDir(), "operation-history.json"),
+	).(*organizationService)
+	renameCalls := 0
+	service.renamePath = func(oldPath, newPath string) error {
+		renameCalls++
+		if renameCalls == 2 {
+			return errors.New("injected commit failure")
+		}
+		return os.Rename(oldPath, newPath)
+	}
+	plan, err := service.Preview(
+		root,
+		[]OrganizationFolderInput{{ID: "photos", Name: "Images"}},
+		[]OrganizationItemInput{{
+			ID:                  "item-1",
+			SourcePath:          source,
+			DestinationFolderID: "photos",
+		}},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	batch, err := service.Apply(plan.ID)
+	if err == nil || !strings.Contains(err.Error(), "injected commit failure") {
+		t.Fatalf("apply error = %v", err)
+	}
+	if batch.State != models.FilesystemBatchStateRolledBack {
+		t.Fatalf("batch state = %q", batch.State)
+	}
+	if content, err := os.ReadFile(source); err != nil || string(content) != "fixture" {
+		t.Fatalf("source content=%q err=%v", content, err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "Images")); !os.IsNotExist(err) {
+		t.Fatalf("created folder survived rollback: %v", err)
+	}
+	if len(service.journal.batches) != 1 ||
+		service.journal.batches[0].State != models.FilesystemBatchStateRolledBack {
+		t.Fatalf("journal batches = %#v", service.journal.batches)
+	}
+}
+
+func TestOrganizationServiceDoesNotOverwriteTargetAppearingDuringApply(
+	t *testing.T,
+) {
+	root := t.TempDir()
+	destination := filepath.Join(root, "Images")
+	if err := os.Mkdir(destination, 0o700); err != nil {
+		t.Fatalf("mkdir destination: %v", err)
+	}
+	source := writeOrganizationFixture(t, filepath.Join(root, "photo.jpg"))
+	target := filepath.Join(destination, "photo.jpg")
+	service := NewOrganizationServiceAt(
+		filepath.Join(t.TempDir(), "operation-history.json"),
+	).(*organizationService)
+	renameCalls := 0
+	service.renamePath = func(oldPath, newPath string) error {
+		renameCalls++
+		if err := os.Rename(oldPath, newPath); err != nil {
+			return err
+		}
+		if renameCalls == 1 {
+			return os.WriteFile(target, []byte("intruder"), 0o600)
+		}
+		return nil
+	}
+	plan, err := service.Preview(
+		root,
+		[]OrganizationFolderInput{{ID: "photos", Name: "Images"}},
+		[]OrganizationItemInput{{
+			ID:                  "item-1",
+			SourcePath:          source,
+			DestinationFolderID: "photos",
+		}},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	batch, err := service.Apply(plan.ID)
+	assertOrganizationUserErrorCode(t, err, "target_changed")
+	if batch.State != models.FilesystemBatchStateRolledBack {
+		t.Fatalf("batch state = %q", batch.State)
+	}
+	if content, err := os.ReadFile(source); err != nil || string(content) != "fixture" {
+		t.Fatalf("source content=%q err=%v", content, err)
+	}
+	if content, err := os.ReadFile(target); err != nil || string(content) != "intruder" {
+		t.Fatalf("target content=%q err=%v", content, err)
+	}
+}
+
+func TestOrganizationServiceBlocksNewApplyAfterIncompleteRollback(t *testing.T) {
+	root := t.TempDir()
+	source := writeOrganizationFixture(t, filepath.Join(root, "photo.jpg"))
+	journalPath := filepath.Join(t.TempDir(), "operation-history.json")
+	service := NewOrganizationServiceAt(journalPath).(*organizationService)
+	renameCalls := 0
+	service.renamePath = func(oldPath, newPath string) error {
+		renameCalls++
+		if renameCalls == 2 {
+			return errors.New("injected commit failure")
+		}
+		return os.Rename(oldPath, newPath)
+	}
+	service.removePath = func(string) error {
+		return errors.New("injected directory rollback failure")
+	}
+	plan, err := service.Preview(
+		root,
+		[]OrganizationFolderInput{{ID: "photos", Name: "Images"}},
+		[]OrganizationItemInput{{
+			ID:                  "item-1",
+			SourcePath:          source,
+			DestinationFolderID: "photos",
+		}},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	batch, err := service.Apply(plan.ID)
+	if err == nil || batch.State != models.FilesystemBatchStateFailed ||
+		service.journalLoadError == nil {
+		t.Fatalf("failed batch=%#v err=%v journalErr=%v", batch, err, service.journalLoadError)
+	}
+	if content, err := os.ReadFile(source); err != nil || string(content) != "fixture" {
+		t.Fatalf("source content=%q err=%v", content, err)
+	}
+
+	service.renamePath = os.Rename
+	service.removePath = os.Remove
+	secondPlan, err := service.Preview(
+		root,
+		[]OrganizationFolderInput{{ID: "photos", Name: "Images"}},
+		[]OrganizationItemInput{{
+			ID:                  "item-2",
+			SourcePath:          source,
+			DestinationFolderID: "photos",
+		}},
+	)
+	if err != nil {
+		t.Fatalf("second preview: %v", err)
+	}
+	_, err = service.Apply(secondPlan.ID)
+	if err == nil || !strings.Contains(err.Error(), "load filesystem operation journal") {
+		t.Fatalf("second apply error = %v", err)
+	}
+	restarted := NewOrganizationServiceAt(journalPath).(*organizationService)
+	if restarted.journalLoadError == nil || !strings.Contains(
+		restarted.journalLoadError.Error(),
+		"requires manual recovery",
+	) {
+		t.Fatalf("restart journal error = %v", restarted.journalLoadError)
+	}
+}
+
+func TestOrganizationServiceApplyRejectsCrossVolumePlan(t *testing.T) {
+	root := t.TempDir()
+	source := writeOrganizationFixture(t, filepath.Join(root, "photo.jpg"))
+	journalPath := filepath.Join(t.TempDir(), "operation-history.json")
+	service := NewOrganizationServiceAt(journalPath).(*organizationService)
+	service.classifySameVolume = func(string, string, os.FileInfo) (bool, error) {
+		return false, nil
+	}
+	plan, err := service.Preview(
+		root,
+		[]OrganizationFolderInput{{ID: "photos", Name: "Images"}},
+		[]OrganizationItemInput{{
+			ID:                  "item-1",
+			SourcePath:          source,
+			DestinationFolderID: "photos",
+		}},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	_, err = service.Apply(plan.ID)
+	assertOrganizationUserErrorCode(t, err, "cross_volume_unsupported")
+	if content, err := os.ReadFile(source); err != nil || string(content) != "fixture" {
+		t.Fatalf("source content=%q err=%v", content, err)
+	}
+	if _, err := os.Lstat(journalPath); !os.IsNotExist(err) {
+		t.Fatalf("rejected apply wrote journal: %v", err)
+	}
+}
+
+func TestOrganizationServiceRecoversStagedBatchOnStartup(t *testing.T) {
+	root := t.TempDir()
+	source := writeOrganizationFixture(t, filepath.Join(root, "photo.jpg"))
+	journalPath := filepath.Join(t.TempDir(), "operation-history.json")
+	service := NewOrganizationServiceAt(journalPath).(*organizationService)
+	plan, err := service.Preview(
+		root,
+		[]OrganizationFolderInput{{ID: "photos", Name: "Images"}},
+		[]OrganizationItemInput{{
+			ID:                  "item-1",
+			SourcePath:          source,
+			DestinationFolderID: "photos",
+		}},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	batch, err := service.Prepare(plan.ID)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if err := os.Mkdir(batch.Operations[0].TargetPath, 0o755); err != nil {
+		t.Fatalf("simulate mkdir: %v", err)
+	}
+	move := batch.Operations[1]
+	if err := os.Rename(move.SourcePath, move.TemporaryPath); err != nil {
+		t.Fatalf("simulate stage: %v", err)
+	}
+	batch.State = models.FilesystemBatchStateStaged
+	if err := service.journal.update(batch); err != nil {
+		t.Fatalf("save staged batch: %v", err)
+	}
+
+	recovered := NewOrganizationServiceAt(journalPath).(*organizationService)
+	if recovered.journalLoadError != nil {
+		t.Fatalf("recover: %v", recovered.journalLoadError)
+	}
+	if content, err := os.ReadFile(source); err != nil || string(content) != "fixture" {
+		t.Fatalf("restored source content=%q err=%v", content, err)
+	}
+	if _, err := os.Lstat(move.TemporaryPath); !os.IsNotExist(err) {
+		t.Fatalf("staged file survived recovery: %v", err)
+	}
+	if _, err := os.Lstat(batch.Operations[0].TargetPath); !os.IsNotExist(err) {
+		t.Fatalf("created folder survived recovery: %v", err)
+	}
+	if recovered.journal.batches[0].State != models.FilesystemBatchStateRolledBack {
+		t.Fatalf("recovered batch = %#v", recovered.journal.batches[0])
+	}
+}
+
+func TestOrganizationServiceRecoversCommittedSwapOnStartup(t *testing.T) {
+	root := t.TempDir()
+	leftDirectory := filepath.Join(root, "Left")
+	rightDirectory := filepath.Join(root, "Right")
+	if err := os.Mkdir(leftDirectory, 0o700); err != nil {
+		t.Fatalf("mkdir left: %v", err)
+	}
+	if err := os.Mkdir(rightDirectory, 0o700); err != nil {
+		t.Fatalf("mkdir right: %v", err)
+	}
+	left := filepath.Join(leftDirectory, "same.txt")
+	right := filepath.Join(rightDirectory, "same.txt")
+	if err := os.WriteFile(left, []byte("left"), 0o600); err != nil {
+		t.Fatalf("write left: %v", err)
+	}
+	if err := os.WriteFile(right, []byte("right"), 0o600); err != nil {
+		t.Fatalf("write right: %v", err)
+	}
+	journalPath := filepath.Join(t.TempDir(), "operation-history.json")
+	service := NewOrganizationServiceAt(journalPath).(*organizationService)
+	plan, err := service.Preview(
+		root,
+		[]OrganizationFolderInput{
+			{ID: "left", Name: "Left"},
+			{ID: "right", Name: "Right"},
+		},
+		[]OrganizationItemInput{
+			{ID: "left-item", SourcePath: left, DestinationFolderID: "right"},
+			{ID: "right-item", SourcePath: right, DestinationFolderID: "left"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	batch, err := service.Prepare(plan.ID)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	for _, operation := range batch.Operations {
+		if err := os.Rename(operation.SourcePath, operation.TemporaryPath); err != nil {
+			t.Fatalf("simulate stage: %v", err)
+		}
+	}
+	batch.State = models.FilesystemBatchStateCommitting
+	if err := service.journal.update(batch); err != nil {
+		t.Fatalf("save committing batch: %v", err)
+	}
+	for _, operation := range batch.Operations {
+		if err := os.Rename(operation.TemporaryPath, operation.TargetPath); err != nil {
+			t.Fatalf("simulate commit: %v", err)
+		}
+	}
+
+	recovered := NewOrganizationServiceAt(journalPath).(*organizationService)
+	if recovered.journalLoadError != nil {
+		t.Fatalf("recover: %v", recovered.journalLoadError)
+	}
+	leftContent, leftErr := os.ReadFile(left)
+	rightContent, rightErr := os.ReadFile(right)
+	if leftErr != nil || rightErr != nil || string(leftContent) != "left" ||
+		string(rightContent) != "right" {
+		t.Fatalf(
+			"recovered left=%q right=%q leftErr=%v rightErr=%v",
+			leftContent,
+			rightContent,
+			leftErr,
+			rightErr,
+		)
+	}
+	if recovered.journal.batches[0].State != models.FilesystemBatchStateRolledBack {
+		t.Fatalf("recovered batch = %#v", recovered.journal.batches[0])
+	}
+}
+
 func TestFilesystemJournalRejectsNewerVersions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "operation-history.json")
 	newerJournal := []byte(`{"version":2,"batches":[]}`)
@@ -533,6 +936,13 @@ func assertOrganizationUserErrorCode(t *testing.T, err error, code string) {
 	if !errors.As(err, &userError) || userError.Code != code {
 		t.Fatalf("error = %#v, want code %q", err, code)
 	}
+}
+
+func newOrganizationServiceForTest(t *testing.T) OrganizationService {
+	t.Helper()
+	return NewOrganizationServiceAt(
+		filepath.Join(t.TempDir(), "operation-history.json"),
+	)
 }
 
 func writeOrganizationFixture(t *testing.T, path string) string {

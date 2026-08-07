@@ -17,6 +17,9 @@ All notable changes to Flick are documented in this file.
 - Expiring organization plans and a versioned, atomically written filesystem
   operation journal that revalidates sources, destinations, and volume identity
   before any future apply step
+- Confirmed same-volume organization apply with journaled folder creation,
+  staged cycle-safe moves, automatic rollback when execution fails, and startup
+  recovery for interrupted batches
 
 ### Changed
 
@@ -24,6 +27,8 @@ All notable changes to Flick are documented in this file.
   collision strategy and resolved items are explicit across Flutter and Go
 - Advanced the workspace contract to RPC Protocol 5 for backend-validated
   organization plans without enabling filesystem changes
+- Advanced the organization contract to RPC Protocol 6 for safe same-volume
+  apply while explicitly blocking cross-volume execution
 
 ## 0.3.0 - 2026-08-06
 

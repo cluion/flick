@@ -72,6 +72,28 @@ func (journal *filesystemJournal) prepend(
 	return nil
 }
 
+func (journal *filesystemJournal) update(
+	batch models.FilesystemOperationBatch,
+) error {
+	index := -1
+	for candidate := range journal.batches {
+		if journal.batches[candidate].ID == batch.ID {
+			index = candidate
+			break
+		}
+	}
+	if index < 0 {
+		return fmt.Errorf("filesystem operation batch %s is missing", batch.ID)
+	}
+	previous := journal.batches[index]
+	journal.batches[index] = batch
+	if err := journal.save(); err != nil {
+		journal.batches[index] = previous
+		return err
+	}
+	return nil
+}
+
 func (journal *filesystemJournal) save() error {
 	sort.SliceStable(journal.batches, func(left, right int) bool {
 		return journal.batches[left].PreparedAt.After(

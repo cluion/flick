@@ -1,6 +1,8 @@
 package controllers
 
 import (
+	"fmt"
+
 	"github.com/cluion/bridra/backend/framework"
 	"github.com/cluion/flick/backend/app/models"
 	"github.com/cluion/flick/backend/app/requests"
@@ -10,6 +12,51 @@ import (
 
 type OrganizationController struct {
 	service services.OrganizationService
+}
+
+func (controller *OrganizationController) Apply(
+	ctx *framework.Context,
+) (any, error) {
+	request, err := framework.BindAndValidate[requests.ApplyOrganizationRequest](ctx)
+	if err != nil {
+		return nil, err
+	}
+	batch, err := controller.service.Apply(request.PlanId)
+	if err != nil {
+		switch batch.State {
+		case models.FilesystemBatchStateRolledBack:
+			return nil, framework.NewError(
+				"organization_apply_rolled_back",
+				"Organization failed and every filesystem change was rolled back.",
+			)
+		case models.FilesystemBatchStateFailed:
+			return nil, framework.NewError(
+				"organization_recovery_required",
+				"Organization stopped with changes that require recovery before another batch.",
+			)
+		}
+		return nil, renderRenameError(err)
+	}
+	movedCount := 0
+	createdFolderCount := 0
+	for _, operation := range batch.Operations {
+		switch operation.Kind {
+		case models.FilesystemOperationMove:
+			movedCount++
+		case models.FilesystemOperationMkdir:
+			createdFolderCount++
+		}
+	}
+	return responses.ApplyOrganizationResponse{
+		BatchId:            batch.ID,
+		MovedCount:         movedCount,
+		CreatedFolderCount: createdFolderCount,
+		Message: fmt.Sprintf(
+			"Created %d folders and moved %d files.",
+			createdFolderCount,
+			movedCount,
+		),
+	}, nil
 }
 
 func NewOrganizationController(

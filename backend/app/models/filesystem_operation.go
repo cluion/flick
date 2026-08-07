@@ -52,7 +52,15 @@ type FilesystemOperationPlan struct {
 	Operations []FilesystemOperation
 }
 
-const FilesystemBatchStatePrepared = "prepared"
+const (
+	FilesystemBatchStatePrepared           = "prepared"
+	FilesystemBatchStateDirectoriesCreated = "directories_created"
+	FilesystemBatchStateStaged             = "staged"
+	FilesystemBatchStateCommitting         = "committing"
+	FilesystemBatchStateCompleted          = "completed"
+	FilesystemBatchStateRolledBack         = "rolled_back"
+	FilesystemBatchStateFailed             = "failed"
+)
 
 type FilesystemBatchOperation struct {
 	ID            string   `json:"id"`
@@ -67,10 +75,12 @@ type FilesystemBatchOperation struct {
 }
 
 type FilesystemOperationBatch struct {
-	ID         string                     `json:"id"`
-	PlanID     string                     `json:"planId"`
-	PreparedAt time.Time                  `json:"preparedAt"`
-	State      string                     `json:"state"`
-	RootPath   string                     `json:"rootPath"`
-	Operations []FilesystemBatchOperation `json:"operations"`
+	ID          string                     `json:"id"`
+	PlanID      string                     `json:"planId"`
+	PreparedAt  time.Time                  `json:"preparedAt"`
+	CompletedAt *time.Time                 `json:"completedAt,omitempty"`
+	State       string                     `json:"state"`
+	Message     string                     `json:"message,omitempty"`
+	RootPath    string                     `json:"rootPath"`
+	Operations  []FilesystemBatchOperation `json:"operations"`
 }
