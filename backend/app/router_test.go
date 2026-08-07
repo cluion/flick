@@ -111,6 +111,64 @@ func TestGeneratedApplicationScansDirectories(t *testing.T) {
 	}
 }
 
+func TestGeneratedApplicationPreviewsOrganizationPlans(t *testing.T) {
+	router := app.NewRouter("test-token", nil, "test")
+	root := t.TempDir()
+	source := filepath.Join(root, "photo.jpg")
+	if err := os.WriteFile(source, []byte("photo"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	params, err := json.Marshal(map[string]any{
+		"rootPath":             root,
+		"folderIds":            []string{"photos"},
+		"folderNames":          []string{"Images"},
+		"itemIds":              []string{"item-1"},
+		"sourcePaths":          []string{source},
+		"destinationFolderIds": []string{"photos"},
+	})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	response := router.Dispatch(context.Background(), framework.Request{
+		ID:     "request-organize",
+		Method: contracts.MethodOrganizePreview,
+		Params: params,
+		Meta:   map[string]string{"token": "test-token"},
+	})
+	if response.Error != nil {
+		t.Fatalf("dispatch error: %v", response.Error)
+	}
+	encoded, err := json.Marshal(response.Result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	var result struct {
+		TargetPaths        []string `json:"targetPaths"`
+		FolderCreated      []bool   `json:"folderCreated"`
+		ItemStatuses       []string `json:"itemStatuses"`
+		ItemOperationKinds []string `json:"itemOperationKinds"`
+		ItemCrossVolume    []bool   `json:"itemCrossVolume"`
+		MkdirCount         int      `json:"mkdirCount"`
+		MoveCount          int      `json:"moveCount"`
+		ErrorCount         int      `json:"errorCount"`
+	}
+	if err := json.Unmarshal(encoded, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if len(result.TargetPaths) != 1 ||
+		result.TargetPaths[0] != filepath.Join(root, "Images", "photo.jpg") ||
+		len(result.FolderCreated) != 1 || !result.FolderCreated[0] ||
+		len(result.ItemStatuses) != 1 || result.ItemStatuses[0] != "ready" ||
+		len(result.ItemOperationKinds) != 1 || result.ItemOperationKinds[0] != "move" ||
+		len(result.ItemCrossVolume) != 1 || result.ItemCrossVolume[0] ||
+		result.MkdirCount != 1 || result.MoveCount != 1 || result.ErrorCount != 0 {
+		t.Fatalf("organization preview = %#v", result)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "Images")); !os.IsNotExist(err) {
+		t.Fatalf("preview created destination: %v", err)
+	}
+}
+
 func TestGeneratedApplicationRejectsInvalidToken(t *testing.T) {
 	router := app.NewRouter("test-token", nil, "test")
 	response := router.Dispatch(context.Background(), framework.Request{

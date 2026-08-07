@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "protocolVersion": 4,
+  "protocolVersion": 5,
   "methods": [
     {
       "name": "system.health",
@@ -36,6 +36,50 @@
         "fields": [
           {"name": "paths", "type": "string", "array": true},
           {"name": "skippedCount", "type": "integer"}
+        ]
+      }
+    },
+    {
+      "name": "organize.preview",
+      "clientName": "previewOrganization",
+      "params": {
+        "goType": "PreviewOrganizationRequest",
+        "dartType": "PreviewOrganizationRequest",
+        "fields": [
+          {"name": "rootPath", "type": "string", "minLength": 1},
+          {"name": "folderIds", "type": "string", "array": true},
+          {"name": "folderNames", "type": "string", "array": true},
+          {"name": "itemIds", "type": "string", "array": true},
+          {"name": "sourcePaths", "type": "string", "array": true},
+          {"name": "destinationFolderIds", "type": "string", "array": true}
+        ]
+      },
+      "result": {
+        "goType": "OrganizationPlanResponse",
+        "dartType": "OrganizationPlan",
+        "fields": [
+          {"name": "planId", "type": "string"},
+          {"name": "rootPath", "type": "string"},
+          {"name": "folderIds", "type": "string", "array": true},
+          {"name": "folderNames", "type": "string", "array": true},
+          {"name": "folderPaths", "type": "string", "array": true},
+          {"name": "folderStatuses", "type": "string", "array": true},
+          {"name": "folderMessages", "type": "string", "array": true},
+          {"name": "folderCreated", "type": "boolean", "array": true},
+          {"name": "itemIds", "type": "string", "array": true},
+          {"name": "sourcePaths", "type": "string", "array": true},
+          {"name": "targetPaths", "type": "string", "array": true},
+          {"name": "itemStatuses", "type": "string", "array": true},
+          {"name": "itemMessages", "type": "string", "array": true},
+          {"name": "itemOperationKinds", "type": "string", "array": true},
+          {"name": "itemCrossVolume", "type": "boolean", "array": true},
+          {"name": "sizes", "type": "integer", "array": true},
+          {"name": "modifiedAt", "type": "integer", "array": true},
+          {"name": "mkdirCount", "type": "integer"},
+          {"name": "moveCount", "type": "integer"},
+          {"name": "unchangedCount", "type": "integer"},
+          {"name": "errorCount", "type": "integer"},
+          {"name": "crossVolumeCount", "type": "integer"}
         ]
       }
     },

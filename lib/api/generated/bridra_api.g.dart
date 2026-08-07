@@ -2,11 +2,12 @@
 
 import 'package:bridra_flutter/bridra_flutter.dart';
 
-const supportedBackendProtocolVersion = 4;
+const supportedBackendProtocolVersion = 5;
 
 abstract final class BridraMethods {
   static const systemHealth = 'system.health';
   static const filesScan = 'files.scan';
+  static const organizePreview = 'organize.preview';
   static const renamePreview = 'rename.preview';
   static const renameApply = 'rename.apply';
   static const renameUndo = 'rename.undo';
@@ -55,6 +56,83 @@ class DirectoryScanResult {
 
   final List<String> paths;
   final int skippedCount;
+}
+
+class PreviewOrganizationRequest {
+  const PreviewOrganizationRequest({
+    required this.rootPath,
+    required this.folderIds,
+    required this.folderNames,
+    required this.itemIds,
+    required this.sourcePaths,
+    required this.destinationFolderIds,
+  });
+
+  final String rootPath;
+  final List<String> folderIds;
+  final List<String> folderNames;
+  final List<String> itemIds;
+  final List<String> sourcePaths;
+  final List<String> destinationFolderIds;
+
+  Map<String, Object?> toJson() => {
+    'rootPath': rootPath,
+    'folderIds': folderIds,
+    'folderNames': folderNames,
+    'itemIds': itemIds,
+    'sourcePaths': sourcePaths,
+    'destinationFolderIds': destinationFolderIds,
+  };
+}
+
+class OrganizationPlan {
+  const OrganizationPlan({
+    required this.planId,
+    required this.rootPath,
+    required this.folderIds,
+    required this.folderNames,
+    required this.folderPaths,
+    required this.folderStatuses,
+    required this.folderMessages,
+    required this.folderCreated,
+    required this.itemIds,
+    required this.sourcePaths,
+    required this.targetPaths,
+    required this.itemStatuses,
+    required this.itemMessages,
+    required this.itemOperationKinds,
+    required this.itemCrossVolume,
+    required this.sizes,
+    required this.modifiedAt,
+    required this.mkdirCount,
+    required this.moveCount,
+    required this.unchangedCount,
+    required this.errorCount,
+    required this.crossVolumeCount,
+  });
+
+  final String planId;
+  final String rootPath;
+  final List<String> folderIds;
+  final List<String> folderNames;
+  final List<String> folderPaths;
+  final List<String> folderStatuses;
+  final List<String> folderMessages;
+  final List<bool> folderCreated;
+  final List<String> itemIds;
+  final List<String> sourcePaths;
+  final List<String> targetPaths;
+  final List<String> itemStatuses;
+  final List<String> itemMessages;
+  final List<String> itemOperationKinds;
+  final List<bool> itemCrossVolume;
+  final List<int> sizes;
+  final List<int> modifiedAt;
+  final int mkdirCount;
+  final int moveCount;
+  final int unchangedCount;
+  final int errorCount;
+  final int crossVolumeCount;
 }
 
 class PreviewRenameRequest {
@@ -182,6 +260,10 @@ abstract interface class BridraApi {
     ScanDirectoriesRequest request, {
     RpcCancellationToken? cancellationToken,
   });
+  Future<OrganizationPlan> previewOrganization(
+    PreviewOrganizationRequest request, {
+    RpcCancellationToken? cancellationToken,
+  });
   Future<RenamePlan> previewRename(
     PreviewRenameRequest request, {
     RpcCancellationToken? cancellationToken,
@@ -248,6 +330,52 @@ class BridraRpcApi implements BridraApi {
     } on Object catch (error) {
       throw BackendProtocolException(
         'The files.scan response does not match the protocol.',
+        cause: error,
+      );
+    }
+  }
+
+  @override
+  Future<OrganizationPlan> previewOrganization(
+    PreviewOrganizationRequest request, {
+    RpcCancellationToken? cancellationToken,
+  }) async {
+    final reply = await _client.call(
+      BridraMethods.organizePreview,
+      params: request.toJson(),
+      cancellationToken: cancellationToken,
+    );
+    try {
+      final result = _requireMap(reply.result, 'organize.preview result');
+      return OrganizationPlan(
+        planId: _requireField<String>(result, 'planId'),
+        rootPath: _requireField<String>(result, 'rootPath'),
+        folderIds: _requireListField<String>(result, 'folderIds'),
+        folderNames: _requireListField<String>(result, 'folderNames'),
+        folderPaths: _requireListField<String>(result, 'folderPaths'),
+        folderStatuses: _requireListField<String>(result, 'folderStatuses'),
+        folderMessages: _requireListField<String>(result, 'folderMessages'),
+        folderCreated: _requireListField<bool>(result, 'folderCreated'),
+        itemIds: _requireListField<String>(result, 'itemIds'),
+        sourcePaths: _requireListField<String>(result, 'sourcePaths'),
+        targetPaths: _requireListField<String>(result, 'targetPaths'),
+        itemStatuses: _requireListField<String>(result, 'itemStatuses'),
+        itemMessages: _requireListField<String>(result, 'itemMessages'),
+        itemOperationKinds: _requireListField<String>(result, 'itemOperationKinds'),
+        itemCrossVolume: _requireListField<bool>(result, 'itemCrossVolume'),
+        sizes: _requireListField<int>(result, 'sizes'),
+        modifiedAt: _requireListField<int>(result, 'modifiedAt'),
+        mkdirCount: _requireField<int>(result, 'mkdirCount'),
+        moveCount: _requireField<int>(result, 'moveCount'),
+        unchangedCount: _requireField<int>(result, 'unchangedCount'),
+        errorCount: _requireField<int>(result, 'errorCount'),
+        crossVolumeCount: _requireField<int>(result, 'crossVolumeCount'),
+      );
+    } on BackendProtocolException {
+      rethrow;
+    } on Object catch (error) {
+      throw BackendProtocolException(
+        'The organize.preview response does not match the protocol.',
         cause: error,
       );
     }

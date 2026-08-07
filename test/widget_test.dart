@@ -37,6 +37,9 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 
 class FakeBackend implements BackendGateway {
   final List<PreviewRenameRequest> previewRequests = [];
+  final List<PreviewOrganizationRequest> organizationPreviewRequests = [];
+  String? organizationItemError;
+  bool organizationCrossVolume = false;
 
   PreviewRenameRequest? get lastPreviewRequest =>
       previewRequests.isEmpty ? null : previewRequests.last;
@@ -49,7 +52,7 @@ class FakeBackend implements BackendGateway {
     return const HealthInfo(
       status: 'ok',
       frameworkVersion: '0.11.0',
-      protocolVersion: 4,
+      protocolVersion: 5,
       runtime: 'Go sidecar',
       architecture: 'Middleware -> Controller -> Service',
     );
@@ -61,6 +64,104 @@ class FakeBackend implements BackendGateway {
     RpcCancellationToken? cancellationToken,
   }) async {
     return const DirectoryScanResult(paths: [], skippedCount: 0);
+  }
+
+  @override
+  Future<OrganizationPlan> previewOrganization(
+    PreviewOrganizationRequest request, {
+    RpcCancellationToken? cancellationToken,
+  }) async {
+    organizationPreviewRequests.add(request);
+    final folderPaths = request.folderNames
+        .map((name) => joinOrganizationPath(request.rootPath, name))
+        .toList(growable: false);
+    final folderCreated = folderPaths
+        .map((path) => !Directory(path).existsSync())
+        .toList(growable: false);
+    final folderStatuses = List.generate(
+      folderPaths.length,
+      (index) => folderCreated[index] ? 'ready' : 'existing',
+      growable: false,
+    );
+    final targetPaths = <String>[];
+    final statuses = <String>[];
+    final messages = <String>[];
+    final operationKinds = <String>[];
+    for (var index = 0; index < request.itemIds.length; index++) {
+      final destinationId = request.destinationFolderIds[index];
+      if (destinationId.isEmpty) {
+        targetPaths.add(request.sourcePaths[index]);
+        statuses.add('unchanged');
+        messages.add('The file will remain in its original location.');
+        operationKinds.add('unchanged');
+        continue;
+      }
+      final folderIndex = request.folderIds.indexOf(destinationId);
+      final targetPath = joinOrganizationPath(
+        folderPaths[folderIndex],
+        organizationFileName(request.sourcePaths[index]),
+      );
+      targetPaths.add(targetPath);
+      statuses.add(organizationItemError == null ? 'ready' : 'error');
+      messages.add(organizationItemError ?? '');
+      operationKinds.add('move');
+    }
+    final targetIndexes = <String, List<int>>{};
+    for (var index = 0; index < targetPaths.length; index++) {
+      targetIndexes.putIfAbsent(targetPaths[index], () => []).add(index);
+    }
+    for (final indexes in targetIndexes.values) {
+      if (indexes.length < 2) continue;
+      for (final index in indexes) {
+        statuses[index] = 'error';
+        messages[index] = 'Multiple files would occupy the same target path.';
+      }
+    }
+    final moveCount = List.generate(
+      statuses.length,
+      (index) => statuses[index] == 'ready' && operationKinds[index] == 'move',
+    ).where((value) => value).length;
+    final unchangedCount = statuses
+        .where((status) => status == 'unchanged')
+        .length;
+    final errorCount = statuses.where((status) => status == 'error').length;
+    final crossVolumeCount = List.generate(
+      statuses.length,
+      (index) =>
+          statuses[index] == 'ready' &&
+          operationKinds[index] == 'move' &&
+          organizationCrossVolume,
+    ).where((value) => value).length;
+    return OrganizationPlan(
+      planId: 'organization-plan-1',
+      rootPath: request.rootPath,
+      folderIds: request.folderIds,
+      folderNames: request.folderNames,
+      folderPaths: folderPaths,
+      folderStatuses: folderStatuses,
+      folderMessages: List.generate(folderPaths.length, (_) => ''),
+      folderCreated: folderCreated,
+      itemIds: request.itemIds,
+      sourcePaths: request.sourcePaths,
+      targetPaths: targetPaths,
+      itemStatuses: statuses,
+      itemMessages: messages,
+      itemOperationKinds: operationKinds,
+      itemCrossVolume: List.generate(
+        request.itemIds.length,
+        (index) =>
+            statuses[index] == 'ready' &&
+            operationKinds[index] == 'move' &&
+            organizationCrossVolume,
+      ),
+      sizes: List.generate(request.itemIds.length, (_) => 7),
+      modifiedAt: List.generate(request.itemIds.length, (_) => 100),
+      mkdirCount: folderCreated.where((value) => value).length,
+      moveCount: moveCount,
+      unchangedCount: unchangedCount,
+      errorCount: errorCount,
+      crossVolumeCount: crossVolumeCount,
+    );
   }
 
   @override
@@ -245,7 +346,7 @@ void main() {
     expect(find.text('v0.3.0 (4)'), findsOneWidget);
     expect(find.text('本機引擎就緒'), findsOneWidget);
     expect(
-      find.byTooltip('Go sidecar · Bridra 0.11.0 · Protocol 4'),
+      find.byTooltip('Go sidecar · Bridra 0.11.0 · Protocol 5'),
       findsOneWidget,
     );
     expect(find.text('改名規則'), findsOneWidget);
@@ -287,6 +388,12 @@ void main() {
       await _dropFile(tester, file.path, backend);
       await _pumpAsyncWork(tester);
       expect(find.text(directory.path), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('organization-backend-verified')),
+        findsOneWidget,
+      );
+      expect(backend.organizationPreviewRequests.last.rootPath, directory.path);
+      expect(backend.organizationPreviewRequests.last.sourcePaths, [file.path]);
 
       await tester.tap(find.byKey(const ValueKey('organization-new-folder')));
       await tester.pumpAndSettle();
@@ -304,6 +411,10 @@ void main() {
       await tester.tap(photos);
       await tester.pumpAndSettle();
 
+      expect(backend.organizationPreviewRequests.last.destinationFolderIds, [
+        'organization-folder-0',
+      ]);
+
       expect(
         find.text(
           joinOrganizationPath(
@@ -313,8 +424,8 @@ void main() {
         ),
         findsOneWidget,
       );
-    expect(find.text('規劃移動'), findsOneWidget);
-    expect(find.text('1 規劃移動'), findsOneWidget);
+      expect(find.text('規劃移動'), findsOneWidget);
+      expect(find.text('1 規劃移動'), findsOneWidget);
       expect(file.existsSync(), isTrue);
       expect(file.readAsStringSync(), 'original');
       expect(
@@ -332,6 +443,7 @@ void main() {
       );
       await tester.tap(find.text('重新命名'));
       await tester.pumpAndSettle();
+      expect(backend.organizationPreviewRequests.last.folderNames.first, '相片');
       expect(
         find.text(
           joinOrganizationPath(
@@ -371,12 +483,61 @@ void main() {
       await tester.tap(root);
       await tester.pumpAndSettle();
       expect(find.text(file.path), findsOneWidget);
-    expect(find.text('保留原位'), findsOneWidget);
-    expect(find.text('1 保留原位'), findsOneWidget);
+      expect(find.text('保留原位'), findsOneWidget);
+      expect(find.text('1 保留原位'), findsOneWidget);
       expect(file.existsSync(), isTrue);
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('shows backend organization conflicts without enabling apply', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(800, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final directory = Directory.systemTemp.createTempSync('flick-conflict-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final file = File('${directory.path}/photo.jpg')
+      ..writeAsStringSync('original');
+    final backend = FakeBackend()
+      ..organizationItemError =
+          'An unrelated item already occupies the target path.';
+
+    await tester.pumpWidget(FlickApp(connector: () async => backend));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('workspace-mode-organize')));
+    await tester.pumpAndSettle();
+    await _dropFile(tester, file.path, backend);
+    await _pumpAsyncWork(tester);
+    await tester.tap(find.byKey(const ValueKey('organization-new-folder')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('virtual-folder-name-field')),
+      '圖片',
+    );
+    await tester.tap(find.text('建立'));
+    await tester.pumpAndSettle();
+    final item = find.byKey(const ValueKey('organization-item-0'));
+    final folder = find.byKey(const ValueKey('organization-folder-0'));
+    await _dragTo(tester, item, folder);
+    await tester.pumpAndSettle();
+    await tester.tap(folder);
+    await tester.pumpAndSettle();
+
+    expect(find.text('最終路徑已被其他項目占用'), findsOneWidget);
+    expect(find.text('待處理'), findsOneWidget);
+    expect(find.text('1 待處理'), findsOneWidget);
+    expect(find.text('安全預覽'), findsOneWidget);
+    expect(file.readAsStringSync(), 'original');
+    expect(
+      Directory(joinOrganizationPath(directory.path, '圖片')).existsSync(),
+      isFalse,
+    );
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('creates, manages, applies, and restores rule presets', (
     tester,

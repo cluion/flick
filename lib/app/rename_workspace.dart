@@ -1495,6 +1495,8 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                     ),
                     OrganizeWorkspace(
                       paths: _paths,
+                      backend: _backend,
+                      active: _workspaceMode == _WorkspaceMode.organize,
                       enabled: connected && !_applying && !_scanning,
                       scanning: _scanning,
                       onChooseFiles: _chooseFiles,

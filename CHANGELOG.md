@@ -11,11 +11,16 @@ All notable changes to Flick are documented in this file.
 - Exact collision-resolved names and status badges in the live preview
 - A preview-only visual organization workspace with virtual folders, safe folder
   name validation, drag-and-drop placement, and live final-path previews
+- A Go-backed organization safety preview with stable source snapshots, folder
+  creation dependencies, target-conflict detection, existing-folder reuse, and
+  cross-volume classification
 
 ### Changed
 
 - Advanced the rename preview contract to RPC Protocol 4 so the selected
   collision strategy and resolved items are explicit across Flutter and Go
+- Advanced the workspace contract to RPC Protocol 5 for backend-validated
+  organization plans without enabling filesystem changes
 
 ## 0.3.0 - 2026-08-06
 

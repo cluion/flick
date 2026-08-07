@@ -65,6 +65,17 @@ class RpcBackend implements BackendGateway {
   }
 
   @override
+  Future<OrganizationPlan> previewOrganization(
+    PreviewOrganizationRequest request, {
+    RpcCancellationToken? cancellationToken,
+  }) {
+    return _api.previewOrganization(
+      request,
+      cancellationToken: cancellationToken,
+    );
+  }
+
+  @override
   Future<RenamePlan> previewRename(
     PreviewRenameRequest request, {
     RpcCancellationToken? cancellationToken,

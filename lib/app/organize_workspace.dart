@@ -1,9 +1,11 @@
 import 'dart:async';
 
+import 'package:bridra_flutter/bridra_flutter.dart' show RpcException;
 import 'package:desktop_drop/desktop_drop.dart' as desktop_drop;
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
+import '../api/backend_gateway.dart';
 import '../domain/organization_workspace.dart';
 import 'flick_app.dart';
 
@@ -11,6 +13,8 @@ class OrganizeWorkspace extends StatefulWidget {
   const OrganizeWorkspace({
     super.key,
     required this.paths,
+    required this.backend,
+    required this.active,
     required this.enabled,
     required this.scanning,
     required this.onChooseFiles,
@@ -21,6 +25,8 @@ class OrganizeWorkspace extends StatefulWidget {
   });
 
   final List<String> paths;
+  final BackendGateway? backend;
+  final bool active;
   final bool enabled;
   final bool scanning;
   final VoidCallback onChooseFiles;
@@ -41,6 +47,10 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
   String? _rootPath;
   String? _notice;
   String? _error;
+  OrganizationPlan? _plan;
+  Timer? _previewTimer;
+  var _previewGeneration = 0;
+  var _previewing = false;
   var _rootWasExplicit = false;
   var _draggingExternal = false;
 
@@ -51,13 +61,23 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
     super.initState();
     _draft = _draft.reconcilePaths(widget.paths, nextItemId: _nextItemId);
     _rootPath = inferOrganizationRoot(widget.paths);
+    if (widget.active) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _schedulePreview(immediate: true);
+      });
+    }
   }
 
   @override
   void didUpdateWidget(covariant OrganizeWorkspace oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.paths == widget.paths) return;
-    if (widget.paths.isEmpty) {
+    final pathsChanged = oldWidget.paths != widget.paths;
+    final backendChanged = oldWidget.backend != widget.backend;
+    final activated = !oldWidget.active && widget.active;
+    if (!pathsChanged && !backendChanged && !activated) return;
+    if (pathsChanged && widget.paths.isEmpty) {
+      _previewTimer?.cancel();
+      _previewGeneration++;
       setState(() {
         _draft = const OrganizationWorkspaceDraft();
         _selectedFolderId = null;
@@ -65,13 +85,95 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
         _rootWasExplicit = false;
         _notice = null;
         _error = null;
+        _plan = null;
+        _previewing = false;
       });
       return;
     }
-    setState(() {
-      _draft = _draft.reconcilePaths(widget.paths, nextItemId: _nextItemId);
-      if (!_rootWasExplicit) _rootPath = inferOrganizationRoot(widget.paths);
+    if (pathsChanged) {
+      setState(() {
+        _draft = _draft.reconcilePaths(widget.paths, nextItemId: _nextItemId);
+        if (!_rootWasExplicit) _rootPath = inferOrganizationRoot(widget.paths);
+        _plan = null;
+      });
+    }
+    if (widget.active) _schedulePreview(immediate: true);
+  }
+
+  @override
+  void dispose() {
+    _previewTimer?.cancel();
+    super.dispose();
+  }
+
+  void _schedulePreview({bool immediate = false}) {
+    _previewTimer?.cancel();
+    final generation = ++_previewGeneration;
+    final backend = widget.backend;
+    final rootPath = _rootPath;
+    if (!widget.active ||
+        backend == null ||
+        rootPath == null ||
+        _draft.items.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _plan = null;
+          _previewing = false;
+        });
+      }
+      return;
+    }
+    if (!_previewing) setState(() => _previewing = true);
+    if (immediate) {
+      unawaited(_preview(generation, backend, rootPath));
+      return;
+    }
+    _previewTimer = Timer(const Duration(milliseconds: 180), () {
+      _previewTimer = null;
+      unawaited(_preview(generation, backend, rootPath));
     });
+  }
+
+  Future<void> _preview(
+    int generation,
+    BackendGateway backend,
+    String rootPath,
+  ) async {
+    try {
+      final plan = await backend.previewOrganization(
+        PreviewOrganizationRequest(
+          rootPath: rootPath,
+          folderIds: _draft.folders
+              .map((folder) => folder.id)
+              .toList(growable: false),
+          folderNames: _draft.folders
+              .map((folder) => folder.name)
+              .toList(growable: false),
+          itemIds: _draft.items.map((item) => item.id).toList(growable: false),
+          sourcePaths: _draft.items
+              .map((item) => item.sourcePath)
+              .toList(growable: false),
+          destinationFolderIds: _draft.items
+              .map((item) => item.destinationFolderId ?? '')
+              .toList(growable: false),
+        ),
+      );
+      if (!mounted || generation != _previewGeneration) return;
+      setState(() {
+        _plan = plan;
+        _error = null;
+      });
+    } on Object catch (error) {
+      if (!mounted || generation != _previewGeneration) return;
+      setState(() {
+        _plan = null;
+        _error = _friendlyOrganizationError(error);
+      });
+    } finally {
+      if (mounted && generation == _previewGeneration) {
+        setState(() => _previewing = false);
+      }
+    }
   }
 
   Future<void> _chooseRoot() async {
@@ -86,7 +188,9 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
         _rootWasExplicit = true;
         _notice = '整理根目錄已設為 $path';
         _error = null;
+        _plan = null;
       });
+      _schedulePreview(immediate: true);
     } on Object catch (error) {
       if (mounted) setState(() => _error = error.toString());
     }
@@ -110,7 +214,9 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
       _draft = _draft.addFolder(folder);
       _notice = '已建立虛擬資料夾「$name」；套用前不會寫入磁碟';
       _error = null;
+      _plan = null;
     });
+    _schedulePreview();
   }
 
   Future<void> _renameFolder(VirtualOrganizationFolder folder) async {
@@ -131,7 +237,9 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
       _draft = _draft.renameFolder(folder.id, name);
       _notice = '虛擬資料夾已重新命名為「$name」';
       _error = null;
+      _plan = null;
     });
+    _schedulePreview();
   }
 
   void _moveItem(String itemId, String? folderId) {
@@ -144,16 +252,23 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
           ? '${organizationFileName(item.sourcePath)} 已回到原位置'
           : '${organizationFileName(item.sourcePath)} 已規劃移至「${folder.name}」';
       _error = null;
+      _plan = null;
     });
+    _schedulePreview();
   }
 
   @override
   Widget build(BuildContext context) {
     final selectedItems = _draft.itemsInFolder(_selectedFolderId);
-    final plannedMoveCount = _draft.items
+    final localMoveCount = _draft.items
         .where((item) => item.destinationFolderId != null)
         .length;
-    final rootMissing = plannedMoveCount > 0 && _rootPath == null;
+    final rootMissing = localMoveCount > 0 && _rootPath == null;
+    final plan = _plan;
+    final plannedMoveCount = plan?.moveCount ?? localMoveCount;
+    final unchangedCount =
+        plan?.unchangedCount ?? _draft.items.length - localMoveCount;
+    final errorCount = plan?.errorCount ?? (rootMissing ? localMoveCount : 0);
 
     return desktop_drop.DropTarget(
       onDragEntered: (_) => setState(() => _draggingExternal = true),
@@ -200,6 +315,7 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
               _OrganizationRootBar(
                 rootPath: _rootPath,
                 rootMissing: rootMissing,
+                verified: plan != null && !_previewing,
                 enabled: widget.enabled,
                 onChooseRoot: () => unawaited(_chooseRoot()),
               ),
@@ -210,6 +326,7 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
                       width: 260,
                       child: _OrganizationFolderPanel(
                         draft: _draft,
+                        plan: plan,
                         selectedFolderId: _selectedFolderId,
                         enabled: widget.enabled,
                         onSelectFolder: (folderId) =>
@@ -224,6 +341,7 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
                     Expanded(
                       child: _OrganizationItemPanel(
                         draft: _draft,
+                        plan: plan,
                         folderId: _selectedFolderId,
                         items: selectedItems,
                         rootPath: _rootPath,
@@ -236,10 +354,12 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
                 ),
               ),
               _OrganizationActionBar(
-                folderCount: _draft.folders.length,
+                folderCount: plan?.mkdirCount ?? _draft.folders.length,
                 plannedMoveCount: plannedMoveCount,
-                unchangedCount: _draft.items.length - plannedMoveCount,
-                errorCount: rootMissing ? plannedMoveCount : 0,
+                unchangedCount: unchangedCount,
+                crossVolumeCount: plan?.crossVolumeCount ?? 0,
+                errorCount: errorCount,
+                previewing: _previewing,
               ),
             ],
           ],
@@ -317,12 +437,14 @@ class _OrganizationRootBar extends StatelessWidget {
   const _OrganizationRootBar({
     required this.rootPath,
     required this.rootMissing,
+    required this.verified,
     required this.enabled,
     required this.onChooseRoot,
   });
 
   final String? rootPath;
   final bool rootMissing;
+  final bool verified;
   final bool enabled;
   final VoidCallback onChooseRoot;
 
@@ -358,6 +480,20 @@ class _OrganizationRootBar extends StatelessWidget {
               ),
             ),
           ),
+          if (verified) ...[
+            const Icon(Icons.verified_outlined, color: mint, size: 15),
+            const SizedBox(width: 5),
+            const Text(
+              'Go 已驗證',
+              key: ValueKey('organization-backend-verified'),
+              style: TextStyle(
+                color: mint,
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(width: 5),
+          ],
           TextButton.icon(
             key: const ValueKey('choose-organization-root'),
             onPressed: enabled ? onChooseRoot : null,
@@ -373,6 +509,7 @@ class _OrganizationRootBar extends StatelessWidget {
 class _OrganizationFolderPanel extends StatelessWidget {
   const _OrganizationFolderPanel({
     required this.draft,
+    required this.plan,
     required this.selectedFolderId,
     required this.enabled,
     required this.onSelectFolder,
@@ -382,6 +519,7 @@ class _OrganizationFolderPanel extends StatelessWidget {
   });
 
   final OrganizationWorkspaceDraft draft;
+  final OrganizationPlan? plan;
   final String? selectedFolderId;
   final bool enabled;
   final ValueChanged<String?> onSelectFolder;
@@ -441,7 +579,14 @@ class _OrganizationFolderPanel extends StatelessWidget {
                     count: draft.itemsInFolder(folder.id).length,
                     selected: selectedFolderId == folder.id,
                     enabled: enabled,
-                    virtual: true,
+                    virtual:
+                        _organizationFolderPreview(plan, folder.id)?.created ??
+                        true,
+                    status: _organizationFolderPreview(plan, folder.id)?.status,
+                    message: _organizationFolderPreview(
+                      plan,
+                      folder.id,
+                    )?.message,
                     onSelect: () => onSelectFolder(folder.id),
                     onAcceptItem: (itemId) => onMoveItem(itemId, folder.id),
                     onRename: () => onRenameFolder(folder),
@@ -473,6 +618,8 @@ class _OrganizationFolderTarget extends StatelessWidget {
     required this.onSelect,
     required this.onAcceptItem,
     this.onRename,
+    this.status,
+    this.message,
   });
 
   final String label;
@@ -480,6 +627,8 @@ class _OrganizationFolderTarget extends StatelessWidget {
   final bool selected;
   final bool enabled;
   final bool virtual;
+  final String? status;
+  final String? message;
   final VoidCallback onSelect;
   final ValueChanged<String> onAcceptItem;
   final VoidCallback? onRename;
@@ -518,12 +667,32 @@ class _OrganizationFolderTarget extends StatelessWidget {
                 ),
                 child: Row(
                   children: [
-                    Icon(
-                      virtual
-                          ? Icons.folder_special_outlined
-                          : Icons.inbox_outlined,
-                      color: virtual ? primaryBright : muted,
-                      size: 18,
+                    Tooltip(
+                      message: _localizedOrganizationMessage(
+                        message,
+                        fallback: status == 'existing'
+                            ? '磁碟上已有此資料夾，套用時會直接使用'
+                            : virtual
+                            ? '套用時將建立這個資料夾'
+                            : '檔案目前保留在原位置',
+                      ),
+                      child: Icon(
+                        status == 'error'
+                            ? Icons.error_outline_rounded
+                            : virtual
+                            ? Icons.folder_special_outlined
+                            : status == 'existing'
+                            ? Icons.folder_outlined
+                            : Icons.inbox_outlined,
+                        color: status == 'error'
+                            ? danger
+                            : virtual
+                            ? primaryBright
+                            : status == 'existing'
+                            ? mint
+                            : muted,
+                        size: 18,
+                      ),
                     ),
                     const SizedBox(width: 8),
                     Expanded(
@@ -570,6 +739,7 @@ class _OrganizationFolderTarget extends StatelessWidget {
 class _OrganizationItemPanel extends StatelessWidget {
   const _OrganizationItemPanel({
     required this.draft,
+    required this.plan,
     required this.folderId,
     required this.items,
     required this.rootPath,
@@ -579,6 +749,7 @@ class _OrganizationItemPanel extends StatelessWidget {
   });
 
   final OrganizationWorkspaceDraft draft;
+  final OrganizationPlan? plan;
   final String? folderId;
   final List<OrganizationWorkspaceItem> items;
   final String? rootPath;
@@ -625,16 +796,22 @@ class _OrganizationItemPanel extends StatelessWidget {
                   separatorBuilder: (_, _) => const SizedBox(height: 8),
                   itemBuilder: (context, index) {
                     final item = items[index];
-                    final targetPath = organizationTargetPath(
-                      draft: draft,
-                      item: item,
-                      rootPath: rootPath,
-                    );
+                    final preview = _organizationItemPreview(plan, item.id);
+                    final targetPath =
+                        preview?.targetPath ??
+                        organizationTargetPath(
+                          draft: draft,
+                          item: item,
+                          rootPath: rootPath,
+                        );
                     return _DraggableOrganizationItem(
                       key: ValueKey(item.id),
                       item: item,
                       targetPath: targetPath,
                       moving: item.destinationFolderId != null,
+                      status: preview?.status,
+                      message: preview?.message,
+                      crossVolume: preview?.crossVolume ?? false,
                       enabled: enabled,
                       onRevealPath: onRevealPath,
                       onCopyPath: onCopyPath,
@@ -653,6 +830,9 @@ class _DraggableOrganizationItem extends StatelessWidget {
     required this.item,
     required this.targetPath,
     required this.moving,
+    required this.status,
+    required this.message,
+    required this.crossVolume,
     required this.enabled,
     required this.onRevealPath,
     required this.onCopyPath,
@@ -661,6 +841,9 @@ class _DraggableOrganizationItem extends StatelessWidget {
   final OrganizationWorkspaceItem item;
   final String? targetPath;
   final bool moving;
+  final String? status;
+  final String? message;
+  final bool crossVolume;
   final bool enabled;
   final ValueChanged<String> onRevealPath;
   final ValueChanged<String> onCopyPath;
@@ -668,8 +851,23 @@ class _DraggableOrganizationItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final name = organizationFileName(item.sourcePath);
+    final error = status == 'error';
+    final statusLabel = error
+        ? '待處理'
+        : crossVolume
+        ? '跨磁碟'
+        : moving
+        ? '規劃移動'
+        : '保留原位';
+    final statusColor = error
+        ? danger
+        : crossVolume
+        ? warning
+        : moving
+        ? primaryBright
+        : mint;
     final card = Container(
-      constraints: const BoxConstraints(minHeight: 72),
+      constraints: BoxConstraints(minHeight: error ? 86 : 72),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: BoxDecoration(
         color: surfaceRaised,
@@ -694,6 +892,19 @@ class _DraggableOrganizationItem extends StatelessWidget {
                     fontWeight: FontWeight.w600,
                   ),
                 ),
+                if (error) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    _localizedOrganizationMessage(
+                      message,
+                      fallback: '整理計畫需要先處理這個項目',
+                    ),
+                    key: ValueKey('organization-error-${item.id}'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: danger, fontSize: 10),
+                  ),
+                ],
                 const SizedBox(height: 4),
                 Text(
                   targetPath ?? '請先選擇整理根目錄',
@@ -712,13 +923,13 @@ class _DraggableOrganizationItem extends StatelessWidget {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
-              color: (moving ? primary : mint).withValues(alpha: 0.1),
+              color: statusColor.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(999),
             ),
             child: Text(
-              moving ? '規劃移動' : '保留原位',
+              statusLabel,
               style: TextStyle(
-                color: moving ? primaryBright : mint,
+                color: statusColor,
                 fontSize: 9,
                 fontWeight: FontWeight.w700,
               ),
@@ -810,13 +1021,17 @@ class _OrganizationActionBar extends StatelessWidget {
     required this.folderCount,
     required this.plannedMoveCount,
     required this.unchangedCount,
+    required this.crossVolumeCount,
     required this.errorCount,
+    required this.previewing,
   });
 
   final int folderCount;
   final int plannedMoveCount;
   final int unchangedCount;
+  final int crossVolumeCount;
   final int errorCount;
+  final bool previewing;
 
   @override
   Widget build(BuildContext context) {
@@ -829,11 +1044,19 @@ class _OrganizationActionBar extends StatelessWidget {
       ),
       child: Row(
         children: [
-          _OrganizationCount(label: '虛擬資料夾', count: folderCount),
+          _OrganizationCount(label: '將建立', count: folderCount),
           const SizedBox(width: 8),
           _OrganizationCount(label: '規劃移動', count: plannedMoveCount),
           const SizedBox(width: 8),
           _OrganizationCount(label: '保留原位', count: unchangedCount),
+          if (crossVolumeCount > 0) ...[
+            const SizedBox(width: 8),
+            _OrganizationCount(
+              label: '跨磁碟',
+              count: crossVolumeCount,
+              color: warning,
+            ),
+          ],
           if (errorCount > 0) ...[
             const SizedBox(width: 8),
             _OrganizationCount(label: '待處理', count: errorCount, color: warning),
@@ -843,8 +1066,13 @@ class _OrganizationActionBar extends StatelessWidget {
             message: '這一階段只建立整理預覽；安全套用與復原會在共享操作計畫完成後開放',
             child: FilledButton.icon(
               onPressed: null,
-              icon: const Icon(Icons.preview_outlined, size: 17),
-              label: const Text('預覽階段'),
+              icon: previewing
+                  ? const SizedBox.square(
+                      dimension: 15,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.verified_user_outlined, size: 17),
+              label: Text(previewing ? '驗證中' : '安全預覽'),
             ),
           ),
         ],
@@ -1072,4 +1300,86 @@ class _OrganizationMessageBar extends StatelessWidget {
       ),
     );
   }
+}
+
+({bool created, String status, String message})? _organizationFolderPreview(
+  OrganizationPlan? plan,
+  String folderId,
+) {
+  if (plan == null) return null;
+  final index = plan.folderIds.indexOf(folderId);
+  if (index < 0 ||
+      index >= plan.folderCreated.length ||
+      index >= plan.folderStatuses.length ||
+      index >= plan.folderMessages.length) {
+    return null;
+  }
+  return (
+    created: plan.folderCreated[index],
+    status: plan.folderStatuses[index],
+    message: plan.folderMessages[index],
+  );
+}
+
+({String targetPath, String status, String message, bool crossVolume})?
+_organizationItemPreview(OrganizationPlan? plan, String itemId) {
+  if (plan == null) return null;
+  final index = plan.itemIds.indexOf(itemId);
+  if (index < 0 ||
+      index >= plan.targetPaths.length ||
+      index >= plan.itemStatuses.length ||
+      index >= plan.itemMessages.length ||
+      index >= plan.itemCrossVolume.length) {
+    return null;
+  }
+  return (
+    targetPath: plan.targetPaths[index],
+    status: plan.itemStatuses[index],
+    message: plan.itemMessages[index],
+    crossVolume: plan.itemCrossVolume[index],
+  );
+}
+
+String _friendlyOrganizationError(Object error) {
+  if (error is RpcException) {
+    return switch (error.code) {
+      'invalid_organization' => '整理計畫資料不一致，請重新加入檔案後再試',
+      'invalid_organization_root' => '請先選擇有效的整理根目錄',
+      'organization_root_unavailable' => '整理根目錄不存在或無法讀取',
+      'organization_root_required' => '整理根目錄必須是一般資料夾，不能是連結',
+      'organization_root_read_only' => '整理根目錄目前無法寫入',
+      'empty_selection' => '請先加入至少一個檔案',
+      'too_many_items' => '整理項目超過上限，請縮小範圍',
+      'too_many_folders' => '虛擬資料夾數量超過上限',
+      _ => error.message,
+    };
+  }
+  return error.toString();
+}
+
+String _localizedOrganizationMessage(
+  String? message, {
+  required String fallback,
+}) {
+  return switch (message) {
+    null || '' => fallback,
+    'This folder already exists and will be reused.' => '磁碟上已有此資料夾，套用時會直接使用',
+    'Multiple virtual folders have the same name.' => '有多個同名的虛擬資料夾',
+    'A non-folder item already occupies this path.' => '此路徑已被非資料夾項目占用',
+    'The destination folder is not writable.' => '目的資料夾目前無法寫入',
+    'The destination folder cannot be inspected.' => '無法檢查目的資料夾',
+    'The destination folder must be fixed first.' => '請先修正目的資料夾',
+    'The destination virtual folder does not exist.' => '目的虛擬資料夾不存在',
+    'The source path is invalid.' => '來源路徑無效',
+    'The source file is missing or inaccessible.' => '來源檔案不存在或無法讀取',
+    'Only regular files can be organized.' => '目前只支援整理一般檔案',
+    'The same source file was added more than once.' => '同一個來源檔案被重複加入',
+    'Multiple files would occupy the same target path.' => '多個檔案會占用相同的最終路徑',
+    'The target path cannot be inspected.' => '無法檢查最終路徑',
+    'An unrelated item already occupies the target path.' => '最終路徑已被其他項目占用',
+    'An occupied target will not be moved away by this plan.' =>
+      '最終路徑上的檔案不會被此計畫移走',
+    'The destination filesystem cannot be classified.' => '無法判斷來源與目的磁碟',
+    _ => message,
+  };
 }

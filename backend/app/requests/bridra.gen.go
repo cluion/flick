@@ -17,6 +17,31 @@ func (ScanDirectoriesRequest) ValidatePayload(payload []byte) error {
 	return framework.ValidateRequestPayload[ScanDirectoriesRequest](payload)
 }
 
+type PreviewOrganizationRequest struct {
+	RootPath             string   `json:"rootPath"`
+	FolderIds            []string `json:"folderIds"`
+	FolderNames          []string `json:"folderNames"`
+	ItemIds              []string `json:"itemIds"`
+	SourcePaths          []string `json:"sourcePaths"`
+	DestinationFolderIds []string `json:"destinationFolderIds"`
+}
+
+func (PreviewOrganizationRequest) ValidatePayload(payload []byte) error {
+	return framework.ValidateRequestPayload[PreviewOrganizationRequest](payload)
+}
+
+var previewOrganizationRequestRules = framework.NewRuleRegistry[PreviewOrganizationRequest](
+	framework.ForField(
+		"rootPath",
+		func(request PreviewOrganizationRequest) string { return request.RootPath },
+		framework.MinLength(1, "RootPath must be at least 1 character."),
+	),
+)
+
+func (request PreviewOrganizationRequest) Validate() error {
+	return previewOrganizationRequestRules.Validate(request)
+}
+
 type PreviewRenameRequest struct {
 	Paths             []string `json:"paths"`
 	Recipe            string   `json:"recipe"`
