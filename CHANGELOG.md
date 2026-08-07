@@ -14,6 +14,9 @@ All notable changes to Flick are documented in this file.
 - A Go-backed organization safety preview with stable source snapshots, folder
   creation dependencies, target-conflict detection, existing-folder reuse, and
   cross-volume classification
+- Expiring organization plans and a versioned, atomically written filesystem
+  operation journal that revalidates sources, destinations, and volume identity
+  before any future apply step
 
 ### Changed
 

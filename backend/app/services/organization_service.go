@@ -5,12 +5,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cluion/flick/backend/app/models"
 )
 
-const maxOrganizationFolders = 1_024
+const (
+	maxOrganizationFolders   = 1_024
+	organizationPlanLifetime = 15 * time.Minute
+)
 
 type OrganizationFolderInput struct {
 	ID   string
@@ -29,6 +33,7 @@ type OrganizationService interface {
 		folders []OrganizationFolderInput,
 		items []OrganizationItemInput,
 	) (models.FilesystemOperationPlan, error)
+	Prepare(planID string) (models.FilesystemOperationBatch, error)
 }
 
 type filesystemVolumeClassifier func(
@@ -38,14 +43,33 @@ type filesystemVolumeClassifier func(
 ) (bool, error)
 
 type organizationService struct {
+	mu                 sync.Mutex
 	now                func() time.Time
 	classifySameVolume filesystemVolumeClassifier
+	plans              map[string]models.FilesystemOperationPlan
+	journal            *filesystemJournal
+	journalLoadError   error
 }
 
 func NewOrganizationService() OrganizationService {
+	configDirectory, err := os.UserConfigDir()
+	if err != nil {
+		configDirectory = os.TempDir()
+	}
+	return NewOrganizationServiceAt(
+		filepath.Join(configDirectory, "Flick", "operation-history.json"),
+	)
+}
+
+func NewOrganizationServiceAt(journalPath string) OrganizationService {
+	journal := newFilesystemJournal(journalPath)
+	journalLoadError := journal.load()
 	return &organizationService{
 		now:                time.Now,
 		classifySameVolume: pathsShareFilesystem,
+		plans:              make(map[string]models.FilesystemOperationPlan),
+		journal:            journal,
+		journalLoadError:   journalLoadError,
 	}
 }
 
@@ -54,6 +78,13 @@ func (service *organizationService) Preview(
 	folders []OrganizationFolderInput,
 	items []OrganizationItemInput,
 ) (models.FilesystemOperationPlan, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+
+	if service.plans == nil {
+		service.plans = make(map[string]models.FilesystemOperationPlan)
+	}
+	service.expirePlans()
 	if len(folders) > maxOrganizationFolders {
 		return models.FilesystemOperationPlan{}, userError(
 			"too_many_folders",
@@ -160,6 +191,7 @@ func (service *organizationService) Preview(
 	markDuplicateOrganizationSources(plan.Items, sourceIndexes)
 	validateOrganizationTargets(plan.Items)
 	plan.Operations = buildOrganizationOperations(plan.Folders, plan.Items)
+	service.plans[plan.ID] = plan
 	return plan, nil
 }
 
@@ -451,4 +483,285 @@ func pathsShareFilesystem(
 		return false, err
 	}
 	return sourceVolume == destinationVolume, nil
+}
+
+func (service *organizationService) Prepare(
+	planID string,
+) (models.FilesystemOperationBatch, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+
+	service.expirePlans()
+	plan, exists := service.plans[strings.TrimSpace(planID)]
+	if !exists {
+		return models.FilesystemOperationBatch{}, userError(
+			"plan_expired",
+			"This organization preview expired. Preview it again before applying.",
+		)
+	}
+	if err := service.revalidatePlan(plan); err != nil {
+		return models.FilesystemOperationBatch{}, err
+	}
+	if service.journalLoadError != nil {
+		return models.FilesystemOperationBatch{}, fmt.Errorf(
+			"load filesystem operation journal: %w",
+			service.journalLoadError,
+		)
+	}
+	batch, err := buildPreparedFilesystemBatch(plan, service.now().UTC())
+	if err != nil {
+		return models.FilesystemOperationBatch{}, err
+	}
+	if service.journal == nil {
+		return models.FilesystemOperationBatch{}, fmt.Errorf(
+			"filesystem operation journal is unavailable",
+		)
+	}
+	if err := service.journal.prepend(batch); err != nil {
+		return models.FilesystemOperationBatch{}, fmt.Errorf(
+			"save filesystem operation journal: %w",
+			err,
+		)
+	}
+	delete(service.plans, plan.ID)
+	return batch, nil
+}
+
+func (service *organizationService) expirePlans() {
+	cutoff := service.now().Add(-organizationPlanLifetime)
+	for id, plan := range service.plans {
+		if plan.CreatedAt.Before(cutoff) {
+			delete(service.plans, id)
+		}
+	}
+}
+
+func (service *organizationService) revalidatePlan(
+	plan models.FilesystemOperationPlan,
+) error {
+	for _, folder := range plan.Folders {
+		if folder.Status == models.OperationStatusError {
+			return userError(
+				"invalid_plan",
+				"Resolve every folder preview error before applying organization.",
+			)
+		}
+	}
+	for _, item := range plan.Items {
+		if item.Status == models.OperationStatusError {
+			return userError(
+				"invalid_plan",
+				"Resolve every file preview error before applying organization.",
+			)
+		}
+	}
+	if len(plan.Operations) == 0 {
+		return userError(
+			"nothing_to_organize",
+			"This organization plan would not change the filesystem.",
+		)
+	}
+	root, err := validateOrganizationRoot(plan.RootPath)
+	if err != nil {
+		return err
+	}
+	if comparablePath(root) != comparablePath(plan.RootPath) {
+		return userError(
+			"plan_changed",
+			"The organization root changed after preview. Preview again.",
+		)
+	}
+	for _, folder := range plan.Folders {
+		if err := revalidateOrganizationFolder(folder); err != nil {
+			return err
+		}
+	}
+	foldersByID := make(map[string]models.PlannedFolder, len(plan.Folders))
+	for _, folder := range plan.Folders {
+		foldersByID[folder.ID] = folder
+	}
+	readyItems := make([]models.PlannedOrganizationItem, 0, len(plan.Items))
+	for _, item := range plan.Items {
+		if item.Status != models.OperationStatusReady ||
+			item.OperationKind != models.FilesystemOperationMove {
+			continue
+		}
+		info, err := os.Lstat(item.SourcePath)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 ||
+			!info.Mode().IsRegular() || info.Size() != item.Size ||
+			info.ModTime().UnixNano() != item.ModifiedAt {
+			return userError(
+				"source_changed",
+				fmt.Sprintf(
+					"%s changed after preview. Preview organization again.",
+					filepath.Base(item.SourcePath),
+				),
+			)
+		}
+		folder, exists := foldersByID[item.DestinationFolderID]
+		if !exists {
+			return userError(
+				"plan_changed",
+				"An organization destination changed after preview. Preview again.",
+			)
+		}
+		destinationAnchor := plan.RootPath
+		if !folder.Created {
+			destinationAnchor = folder.TargetPath
+		}
+		sameVolume, err := service.classifySameVolume(
+			item.SourcePath,
+			destinationAnchor,
+			info,
+		)
+		if err != nil || item.CrossVolume == sameVolume {
+			return userError(
+				"plan_changed",
+				"The source or destination filesystem changed after preview. Preview again.",
+			)
+		}
+		readyItems = append(readyItems, item)
+	}
+	return revalidateOrganizationTargets(readyItems)
+}
+
+func revalidateOrganizationFolder(folder models.PlannedFolder) error {
+	info, err := os.Lstat(folder.TargetPath)
+	if folder.Created {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("inspect organization folder: %w", err)
+		}
+		return userError(
+			"target_changed",
+			fmt.Sprintf(
+				"%s now exists. Preview organization again.",
+				folder.Name,
+			),
+		)
+	}
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() ||
+		info.Mode().Perm()&0o222 == 0 {
+		return userError(
+			"target_changed",
+			fmt.Sprintf(
+				"%s changed after preview. Preview organization again.",
+				folder.Name,
+			),
+		)
+	}
+	return nil
+}
+
+func revalidateOrganizationTargets(
+	items []models.PlannedOrganizationItem,
+) error {
+	sources := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		sources[comparablePath(item.SourcePath)] = struct{}{}
+	}
+	for _, item := range items {
+		if _, err := os.Lstat(item.TargetPath); err == nil {
+			if _, moving := sources[comparablePath(item.TargetPath)]; !moving {
+				return userError(
+					"target_changed",
+					fmt.Sprintf(
+						"%s now conflicts with an existing item.",
+						filepath.Base(item.TargetPath),
+					),
+				)
+			}
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect organization target: %w", err)
+		}
+	}
+	return nil
+}
+
+func buildPreparedFilesystemBatch(
+	plan models.FilesystemOperationPlan,
+	preparedAt time.Time,
+) (models.FilesystemOperationBatch, error) {
+	batch := models.FilesystemOperationBatch{
+		ID:         newID("operation-batch"),
+		PlanID:     plan.ID,
+		PreparedAt: preparedAt,
+		State:      models.FilesystemBatchStatePrepared,
+		RootPath:   plan.RootPath,
+		Operations: make(
+			[]models.FilesystemBatchOperation,
+			0,
+			len(plan.Operations),
+		),
+	}
+	itemsBySource := make(
+		map[string]models.PlannedOrganizationItem,
+		len(plan.Items),
+	)
+	for _, item := range plan.Items {
+		itemsBySource[comparablePath(item.SourcePath)] = item
+	}
+	for index, operation := range plan.Operations {
+		prepared := models.FilesystemBatchOperation{
+			ID:           operation.ID,
+			Kind:         operation.Kind,
+			SourcePath:   operation.SourcePath,
+			TargetPath:   operation.TargetPath,
+			Dependencies: append([]string(nil), operation.Dependencies...),
+			CrossVolume:  operation.CrossVolume,
+		}
+		if operation.Kind == models.FilesystemOperationMove {
+			item, exists := itemsBySource[comparablePath(operation.SourcePath)]
+			if !exists {
+				return models.FilesystemOperationBatch{}, userError(
+					"plan_changed",
+					"An organization operation no longer matches its source snapshot.",
+				)
+			}
+			temporaryPath, err := plannedOperationTemporaryPath(
+				operation,
+				batch.ID,
+				index,
+			)
+			if err != nil {
+				return models.FilesystemOperationBatch{}, err
+			}
+			prepared.TemporaryPath = temporaryPath
+			prepared.Size = item.Size
+			prepared.ModifiedAt = item.ModifiedAt
+		}
+		batch.Operations = append(batch.Operations, prepared)
+	}
+	return batch, nil
+}
+
+func plannedOperationTemporaryPath(
+	operation models.FilesystemOperation,
+	batchID string,
+	index int,
+) (string, error) {
+	directory := filepath.Dir(operation.SourcePath)
+	suffix := "tmp"
+	if operation.CrossVolume {
+		directory = filepath.Dir(operation.TargetPath)
+		suffix = "copy.tmp"
+	}
+	for attempt := 0; attempt < 100; attempt++ {
+		name := fmt.Sprintf(
+			".flick-%s-%d-%d.%s",
+			batchID,
+			index,
+			attempt,
+			suffix,
+		)
+		candidate := filepath.Join(directory, name)
+		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
+			return candidate, nil
+		} else if err != nil {
+			return "", fmt.Errorf("inspect operation temporary path: %w", err)
+		}
+	}
+	return "", fmt.Errorf("could not plan a unique operation temporary path")
 }

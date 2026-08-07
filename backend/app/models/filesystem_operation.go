@@ -51,3 +51,26 @@ type FilesystemOperationPlan struct {
 	Items      []PlannedOrganizationItem
 	Operations []FilesystemOperation
 }
+
+const FilesystemBatchStatePrepared = "prepared"
+
+type FilesystemBatchOperation struct {
+	ID            string   `json:"id"`
+	Kind          string   `json:"kind"`
+	SourcePath    string   `json:"sourcePath,omitempty"`
+	TemporaryPath string   `json:"temporaryPath,omitempty"`
+	TargetPath    string   `json:"targetPath"`
+	Dependencies  []string `json:"dependencies,omitempty"`
+	CrossVolume   bool     `json:"crossVolume,omitempty"`
+	Size          int64    `json:"size,omitempty"`
+	ModifiedAt    int64    `json:"modifiedAt,omitempty"`
+}
+
+type FilesystemOperationBatch struct {
+	ID         string                     `json:"id"`
+	PlanID     string                     `json:"planId"`
+	PreparedAt time.Time                  `json:"preparedAt"`
+	State      string                     `json:"state"`
+	RootPath   string                     `json:"rootPath"`
+	Operations []FilesystemBatchOperation `json:"operations"`
+}
