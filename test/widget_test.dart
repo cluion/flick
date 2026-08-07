@@ -9,6 +9,7 @@ import 'package:file_selector_platform_interface/file_selector_platform_interfac
 import 'package:flick/api/backend_gateway.dart';
 import 'package:flick/app/flick_app.dart';
 import 'package:flick/domain/file_list_io.dart';
+import 'package:flick/domain/organization_workspace.dart';
 import 'package:flick/domain/rename_rule.dart';
 import 'package:flick/domain/rule_configuration_history.dart';
 import 'package:flick/domain/rule_preset.dart';
@@ -261,6 +262,121 @@ void main() {
     expect(find.text('加入資料夾'), findsOneWidget);
     expect(find.byKey(const ValueKey('file-list-menu')), findsOneWidget);
   });
+
+  testWidgets(
+    'stages files across renamed virtual folders without disk writes',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      tester.view.physicalSize = const Size(800, 640);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final directory = Directory.systemTemp.createTempSync('flick-organize-');
+      addTearDown(() => directory.deleteSync(recursive: true));
+      final file = File('${directory.path}/photo.jpg')
+        ..writeAsStringSync('original');
+      final backend = FakeBackend();
+
+      await tester.pumpWidget(FlickApp(connector: () async => backend));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('workspace-mode-organize')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('視覺整理工作區'), findsOneWidget);
+      expect(find.text('加入檔案，開始規劃資料夾'), findsOneWidget);
+      await _dropFile(tester, file.path, backend);
+      await _pumpAsyncWork(tester);
+      expect(find.text(directory.path), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('organization-new-folder')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('virtual-folder-name-field')),
+        '圖片',
+      );
+      await tester.tap(find.text('建立'));
+      await tester.pumpAndSettle();
+
+      final item = find.byKey(const ValueKey('organization-item-0'));
+      final photos = find.byKey(const ValueKey('organization-folder-0'));
+      await _dragTo(tester, item, photos);
+      await tester.pumpAndSettle();
+      await tester.tap(photos);
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text(
+          joinOrganizationPath(
+            joinOrganizationPath(directory.path, '圖片'),
+            'photo.jpg',
+          ),
+        ),
+        findsOneWidget,
+      );
+    expect(find.text('規劃移動'), findsOneWidget);
+    expect(find.text('1 規劃移動'), findsOneWidget);
+      expect(file.existsSync(), isTrue);
+      expect(file.readAsStringSync(), 'original');
+      expect(
+        Directory(joinOrganizationPath(directory.path, '圖片')).existsSync(),
+        isFalse,
+      );
+
+      await tester.tap(
+        find.byKey(const ValueKey('rename-organization-folder-圖片')),
+      );
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('virtual-folder-name-field')),
+        '相片',
+      );
+      await tester.tap(find.text('重新命名'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          joinOrganizationPath(
+            joinOrganizationPath(directory.path, '相片'),
+            'photo.jpg',
+          ),
+        ),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.byKey(const ValueKey('organization-new-folder')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('virtual-folder-name-field')),
+        '精選',
+      );
+      await tester.tap(find.text('建立'));
+      await tester.pumpAndSettle();
+      final featured = find.byKey(const ValueKey('organization-folder-1'));
+      await _dragTo(tester, item, featured);
+      await tester.pumpAndSettle();
+      await tester.tap(featured);
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          joinOrganizationPath(
+            joinOrganizationPath(directory.path, '精選'),
+            'photo.jpg',
+          ),
+        ),
+        findsOneWidget,
+      );
+
+      final root = find.byKey(const ValueKey('organization-folder-root'));
+      await _dragTo(tester, item, root);
+      await tester.pumpAndSettle();
+      await tester.tap(root);
+      await tester.pumpAndSettle();
+      expect(find.text(file.path), findsOneWidget);
+    expect(find.text('保留原位'), findsOneWidget);
+    expect(find.text('1 保留原位'), findsOneWidget);
+      expect(file.existsSync(), isTrue);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('creates, manages, applies, and restores rule presets', (
     tester,
@@ -1306,6 +1422,14 @@ Future<void> _pumpAsyncWork(WidgetTester tester) async {
   for (var index = 0; index < 6; index++) {
     await tester.pump(const Duration(milliseconds: 50));
   }
+}
+
+Future<void> _dragTo(WidgetTester tester, Finder source, Finder target) {
+  return tester.timedDrag(
+    source,
+    tester.getCenter(target) - tester.getCenter(source),
+    const Duration(milliseconds: 500),
+  );
 }
 
 Future<void> _dropFile(WidgetTester tester, String path, FakeBackend backend) {

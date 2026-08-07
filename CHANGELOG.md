@@ -9,6 +9,8 @@ All notable changes to Flick are documented in this file.
 - A safe collision strategy that appends `(2)`, `(3)`, and later numbers before
   the file extension while preserving the original file
 - Exact collision-resolved names and status badges in the live preview
+- A preview-only visual organization workspace with virtual folders, safe folder
+  name validation, drag-and-drop placement, and live final-path previews
 
 ### Changed
 

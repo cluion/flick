@@ -22,6 +22,7 @@ import '../domain/rule_preset.dart';
 import '../domain/rule_recipe_file.dart';
 import '../platform/file_actions.dart';
 import 'flick_app.dart';
+import 'organize_workspace.dart';
 
 const _savedRulesKey = 'flick.rename-rules.v2';
 const _savedRulePresetsKey = 'flick.rule-presets.v1';
@@ -31,6 +32,8 @@ const _maxRulePresetFileBytes = 5 * 1024 * 1024;
 const _maxRuleRecipeFileBytes = 1024 * 1024;
 const _maxRenameItems = 10000;
 const _previewRowExtent = 65.0;
+
+enum _WorkspaceMode { rename, organize }
 
 class RenameWorkspace extends StatefulWidget {
   const RenameWorkspace({
@@ -83,6 +86,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   var _scanning = false;
   var _applying = false;
   var _dragging = false;
+  var _workspaceMode = _WorkspaceMode.rename;
   var _previewGeneration = 0;
   String? _activePath;
   int? _selectionAnchorIndex;
@@ -1353,9 +1357,11 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                 health: _health,
                 connected: connected,
                 connecting: _connecting,
-                canUndo: canUndo,
+                mode: _workspaceMode,
+                canUndo: canUndo && _workspaceMode == _WorkspaceMode.rename,
                 busy: _applying || _scanning,
                 onUndo: _undoLatest,
+                onModeChanged: (mode) => setState(() => _workspaceMode = mode),
               ),
               if (_error != null)
                 _MessageBar(
@@ -1372,115 +1378,132 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                   onClose: () => setState(() => _notice = null),
                 ),
               Expanded(
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final rules = _RulesPanel(
-                      rules: _rules,
-                      presetCount: _rulePresets.length,
-                      currentNames:
-                          _plan != null &&
-                              listEquals(_plan!.sourcePaths, _paths)
-                          ? _plan!.proposedNames
-                          : _paths
-                                .map(_fileNameFromPath)
-                                .toList(growable: false),
-                      enabled: connected && !_applying && !_scanning,
-                      canExportMapping:
-                          _plan != null &&
-                          listEquals(_plan!.sourcePaths, _paths),
-                      onAdd: _addRule,
-                      onManagePresets: _showRulePresets,
-                      onLoadRecipe: _loadRuleRecipeFile,
-                      onSaveRecipe: _saveRuleRecipeFile,
-                      onUpdate: _updateRule,
-                      onLoadList: _loadListRule,
-                      onExportMapping: _exportRenameMapping,
-                      onRemove: _removeRule,
-                      onReorder: _reorderRule,
-                    );
-                    final preview = _PreviewPanel(
+                child: IndexedStack(
+                  index: _workspaceMode.index,
+                  children: [
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final rules = _RulesPanel(
+                          rules: _rules,
+                          presetCount: _rulePresets.length,
+                          currentNames:
+                              _plan != null &&
+                                  listEquals(_plan!.sourcePaths, _paths)
+                              ? _plan!.proposedNames
+                              : _paths
+                                    .map(_fileNameFromPath)
+                                    .toList(growable: false),
+                          enabled: connected && !_applying && !_scanning,
+                          canExportMapping:
+                              _plan != null &&
+                              listEquals(_plan!.sourcePaths, _paths),
+                          onAdd: _addRule,
+                          onManagePresets: _showRulePresets,
+                          onLoadRecipe: _loadRuleRecipeFile,
+                          onSaveRecipe: _saveRuleRecipeFile,
+                          onUpdate: _updateRule,
+                          onLoadList: _loadListRule,
+                          onExportMapping: _exportRenameMapping,
+                          onRemove: _removeRule,
+                          onReorder: _reorderRule,
+                        );
+                        final preview = _PreviewPanel(
+                          paths: _paths,
+                          plan: _plan,
+                          visibleIndices: _visiblePreviewIndices,
+                          searchController: _previewSearchController,
+                          searchQuery: _previewQuery,
+                          sortField: _previewSortField,
+                          sortAscending: _previewSortAscending,
+                          collisionStrategy: _collisionStrategy,
+                          excludedPaths: _excludedPaths,
+                          overridePaths: _nameOverrides.keys.toSet(),
+                          selectedPaths: _selectedPaths,
+                          activePath: _activePath,
+                          connected: connected,
+                          previewing: _previewing,
+                          previewPending: _previewPending,
+                          previewFailed: _previewFailed,
+                          applying: _applying,
+                          scanning: _scanning,
+                          dragging: _dragging,
+                          onChooseFiles: _chooseFiles,
+                          onChooseDirectory: _chooseDirectory,
+                          onSaveFileList: _saveFileList,
+                          onLoadFileList: _loadFileList,
+                          onRevealPath: _revealPath,
+                          onCopyPath: _copyPath,
+                          onRemovePath: _removePath,
+                          onSetPathIncluded: _setPathIncluded,
+                          onSetAllPathsIncluded: _setAllPathsIncluded,
+                          onSetSelectedPathsIncluded: _setSelectedPathsIncluded,
+                          onSelectPath: _selectPath,
+                          onClearSelection: _clearPreviewSelection,
+                          onSearchChanged: _setPreviewQuery,
+                          onClearSearch: _clearPreviewQuery,
+                          onSortFieldChanged: _setPreviewSortField,
+                          onToggleSortDirection: _togglePreviewSortDirection,
+                          onCollisionStrategyChanged: _setCollisionStrategy,
+                          processingOrderVisible: _processingOrderVisible,
+                          enabledOrderMoves: {
+                            for (final move in PreviewOrderMove.values)
+                              if (canMoveSelectedPreviewPaths(
+                                paths: _paths,
+                                selectedPaths: _selectedPaths,
+                                move: move,
+                              ))
+                                move,
+                          },
+                          onShowProcessingOrder: _showProcessingOrder,
+                          onMoveSelectedPaths: _moveSelectedPaths,
+                          onEditProposedName: _editProposedName,
+                          onClearPaths: _clearPaths,
+                          onApply: _apply,
+                          focusNode: _previewFocusNode,
+                          scrollController: _previewScrollController,
+                          onKeyEvent: _handlePreviewKey,
+                          onDragEntered: () => setState(() => _dragging = true),
+                          onDragExited: () => setState(() => _dragging = false),
+                          onDrop: (files) {
+                            setState(() => _dragging = false);
+                            unawaited(_handleDroppedItems(files));
+                          },
+                        );
+                        if (constraints.maxWidth >= 900) {
+                          return Row(
+                            children: [
+                              SizedBox(width: 360, child: rules),
+                              const VerticalDivider(width: 1),
+                              Expanded(child: preview),
+                            ],
+                          );
+                        }
+                        return Column(
+                          children: [
+                            const TabBar(
+                              tabs: [
+                                Tab(text: '改名規則'),
+                                Tab(text: '檔案預覽'),
+                              ],
+                            ),
+                            Expanded(
+                              child: TabBarView(children: [rules, preview]),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                    OrganizeWorkspace(
                       paths: _paths,
-                      plan: _plan,
-                      visibleIndices: _visiblePreviewIndices,
-                      searchController: _previewSearchController,
-                      searchQuery: _previewQuery,
-                      sortField: _previewSortField,
-                      sortAscending: _previewSortAscending,
-                      collisionStrategy: _collisionStrategy,
-                      excludedPaths: _excludedPaths,
-                      overridePaths: _nameOverrides.keys.toSet(),
-                      selectedPaths: _selectedPaths,
-                      activePath: _activePath,
-                      connected: connected,
-                      previewing: _previewing,
-                      previewPending: _previewPending,
-                      previewFailed: _previewFailed,
-                      applying: _applying,
+                      enabled: connected && !_applying && !_scanning,
                       scanning: _scanning,
-                      dragging: _dragging,
                       onChooseFiles: _chooseFiles,
                       onChooseDirectory: _chooseDirectory,
-                      onSaveFileList: _saveFileList,
-                      onLoadFileList: _loadFileList,
                       onRevealPath: _revealPath,
                       onCopyPath: _copyPath,
-                      onRemovePath: _removePath,
-                      onSetPathIncluded: _setPathIncluded,
-                      onSetAllPathsIncluded: _setAllPathsIncluded,
-                      onSetSelectedPathsIncluded: _setSelectedPathsIncluded,
-                      onSelectPath: _selectPath,
-                      onClearSelection: _clearPreviewSelection,
-                      onSearchChanged: _setPreviewQuery,
-                      onClearSearch: _clearPreviewQuery,
-                      onSortFieldChanged: _setPreviewSortField,
-                      onToggleSortDirection: _togglePreviewSortDirection,
-                      onCollisionStrategyChanged: _setCollisionStrategy,
-                      processingOrderVisible: _processingOrderVisible,
-                      enabledOrderMoves: {
-                        for (final move in PreviewOrderMove.values)
-                          if (canMoveSelectedPreviewPaths(
-                            paths: _paths,
-                            selectedPaths: _selectedPaths,
-                            move: move,
-                          ))
-                            move,
-                      },
-                      onShowProcessingOrder: _showProcessingOrder,
-                      onMoveSelectedPaths: _moveSelectedPaths,
-                      onEditProposedName: _editProposedName,
-                      onClearPaths: _clearPaths,
-                      onApply: _apply,
-                      focusNode: _previewFocusNode,
-                      scrollController: _previewScrollController,
-                      onKeyEvent: _handlePreviewKey,
-                      onDragEntered: () => setState(() => _dragging = true),
-                      onDragExited: () => setState(() => _dragging = false),
-                      onDrop: (files) {
-                        setState(() => _dragging = false);
-                        unawaited(_handleDroppedItems(files));
-                      },
-                    );
-                    if (constraints.maxWidth >= 900) {
-                      return Row(
-                        children: [
-                          SizedBox(width: 360, child: rules),
-                          const VerticalDivider(width: 1),
-                          Expanded(child: preview),
-                        ],
-                      );
-                    }
-                    return Column(
-                      children: [
-                        const TabBar(
-                          tabs: [
-                            Tab(text: '改名規則'),
-                            Tab(text: '檔案預覽'),
-                          ],
-                        ),
-                        Expanded(child: TabBarView(children: [rules, preview])),
-                      ],
-                    );
-                  },
+                      onDrop: (files) => unawaited(_handleDroppedItems(files)),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -1577,18 +1600,22 @@ class _WorkspaceHeader extends StatelessWidget {
     required this.health,
     required this.connected,
     required this.connecting,
+    required this.mode,
     required this.canUndo,
     required this.busy,
     required this.onUndo,
+    required this.onModeChanged,
   });
 
   final String? appVersion;
   final HealthInfo? health;
   final bool connected;
   final bool connecting;
+  final _WorkspaceMode mode;
   final bool canUndo;
   final bool busy;
   final VoidCallback onUndo;
+  final ValueChanged<_WorkspaceMode> onModeChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -1599,50 +1626,167 @@ class _WorkspaceHeader extends StatelessWidget {
         color: surface,
         border: Border(bottom: BorderSide(color: border)),
       ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxWidth < 980;
+          return Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: primary,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(
+                  mode == _WorkspaceMode.rename
+                      ? Icons.drive_file_rename_outline_rounded
+                      : Icons.account_tree_outlined,
+                  color: Colors.white,
+                  size: 21,
+                ),
+              ),
+              const SizedBox(width: 12),
+              const Text(
+                'Flick',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.5,
+                ),
+              ),
+              if (!compact) ...[
+                const SizedBox(width: 10),
+                Text(
+                  mode == _WorkspaceMode.rename ? '批次檔名整理' : '視覺檔案整理',
+                  style: const TextStyle(color: subtle, fontSize: 13),
+                ),
+              ],
+              if (appVersion case final version?) ...[
+                const SizedBox(width: 9),
+                _VersionBadge(version: version),
+              ],
+              const Spacer(),
+              _WorkspaceModeSwitcher(
+                mode: mode,
+                enabled: !busy,
+                onChanged: onModeChanged,
+              ),
+              const SizedBox(width: 12),
+              _ConnectionStatus(
+                health: health,
+                connected: connected,
+                connecting: connecting,
+              ),
+              SizedBox(width: compact ? 8 : 12),
+              if (compact)
+                IconButton.outlined(
+                  onPressed: canUndo && !busy ? onUndo : null,
+                  tooltip: '復原上一批',
+                  icon: const Icon(Icons.undo_rounded, size: 18),
+                )
+              else
+                OutlinedButton.icon(
+                  onPressed: canUndo && !busy ? onUndo : null,
+                  icon: const Icon(Icons.undo_rounded, size: 18),
+                  label: const Text('復原上一批'),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _WorkspaceModeSwitcher extends StatelessWidget {
+  const _WorkspaceModeSwitcher({
+    required this.mode,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final _WorkspaceMode mode;
+  final bool enabled;
+  final ValueChanged<_WorkspaceMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 38,
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0E1117),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: border),
+      ),
       child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              color: primary,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: const Icon(
-              Icons.drive_file_rename_outline_rounded,
-              color: Colors.white,
-              size: 21,
-            ),
+          _WorkspaceModeButton(
+            key: const ValueKey('workspace-mode-rename'),
+            label: '改名',
+            icon: Icons.drive_file_rename_outline_rounded,
+            selected: mode == _WorkspaceMode.rename,
+            enabled: enabled,
+            onTap: () => onChanged(_WorkspaceMode.rename),
           ),
-          const SizedBox(width: 12),
-          const Text(
-            'Flick',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 20,
-              fontWeight: FontWeight.w800,
-              letterSpacing: -0.5,
-            ),
-          ),
-          const SizedBox(width: 10),
-          const Text('批次檔名整理', style: TextStyle(color: subtle, fontSize: 13)),
-          if (appVersion case final version?) ...[
-            const SizedBox(width: 9),
-            _VersionBadge(version: version),
-          ],
-          const Spacer(),
-          _ConnectionStatus(
-            health: health,
-            connected: connected,
-            connecting: connecting,
-          ),
-          const SizedBox(width: 12),
-          OutlinedButton.icon(
-            onPressed: canUndo && !busy ? onUndo : null,
-            icon: const Icon(Icons.undo_rounded, size: 18),
-            label: const Text('復原上一批'),
+          _WorkspaceModeButton(
+            key: const ValueKey('workspace-mode-organize'),
+            label: '整理',
+            icon: Icons.account_tree_outlined,
+            selected: mode == _WorkspaceMode.organize,
+            enabled: enabled,
+            onTap: () => onChanged(_WorkspaceMode.organize),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _WorkspaceModeButton extends StatelessWidget {
+  const _WorkspaceModeButton({
+    super.key,
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected ? primary.withValues(alpha: 0.18) : Colors.transparent,
+      borderRadius: BorderRadius.circular(7),
+      child: InkWell(
+        onTap: enabled ? onTap : null,
+        borderRadius: BorderRadius.circular(7),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+          child: Row(
+            children: [
+              Icon(icon, color: selected ? primaryBright : subtle, size: 15),
+              const SizedBox(width: 5),
+              Text(
+                label,
+                style: TextStyle(
+                  color: selected ? primaryBright : muted,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
