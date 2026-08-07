@@ -87,6 +87,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   var _scanning = false;
   var _applying = false;
   var _dragging = false;
+  var _handlingDrop = false;
   var _workspaceMode = _WorkspaceMode.rename;
   var _previewGeneration = 0;
   String? _activePath;
@@ -497,6 +498,11 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   }
 
   Future<void> _handleDroppedItems(List<XFile> items) async {
+    if (_handlingDrop) return;
+    setState(() {
+      _handlingDrop = true;
+      _dragging = false;
+    });
     final files = <String>[];
     final directories = <String>[];
     var unsupportedCount = 0;
@@ -512,21 +518,28 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
             unsupportedCount++;
         }
       }
+      if (!mounted) return;
+      if (files.isNotEmpty) {
+        _addPaths(
+          files,
+          notice: unsupportedCount == 0
+              ? null
+              : '已略過 $unsupportedCount 個不支援的項目',
+        );
+      } else if (unsupportedCount > 0) {
+        setState(() => _notice = '已略過 $unsupportedCount 個不支援的項目');
+      }
+      if (directories.isNotEmpty && mounted) {
+        await _configureAndScanDirectories(directories);
+      }
     } on Object catch (error) {
       if (mounted) setState(() => _error = error);
-      return;
-    }
-    if (!mounted) return;
-    if (files.isNotEmpty) {
-      _addPaths(
-        files,
-        notice: unsupportedCount == 0 ? null : '已略過 $unsupportedCount 個不支援的項目',
-      );
-    } else if (unsupportedCount > 0) {
-      setState(() => _notice = '已略過 $unsupportedCount 個不支援的項目');
-    }
-    if (directories.isNotEmpty && mounted) {
-      await _configureAndScanDirectories(directories);
+    } finally {
+      if (mounted) {
+        setState(() => _handlingDrop = false);
+      } else {
+        _handlingDrop = false;
+      }
     }
   }
 
@@ -1540,6 +1553,9 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                           applying: _applying,
                           scanning: _scanning,
                           dragging: _dragging,
+                          dropEnabled:
+                              _workspaceMode == _WorkspaceMode.rename &&
+                              !_handlingDrop,
                           onChooseFiles: _chooseFiles,
                           onChooseDirectory: _chooseDirectory,
                           onSaveFileList: _saveFileList,
@@ -1610,8 +1626,14 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                       paths: _paths,
                       backend: _backend,
                       active: _workspaceMode == _WorkspaceMode.organize,
-                      enabled: connected && !_applying && !_scanning,
+                      enabled:
+                          connected &&
+                          !_applying &&
+                          !_scanning &&
+                          !_handlingDrop,
                       scanning: _scanning,
+                      collisionStrategy: _collisionStrategy,
+                      onCollisionStrategyChanged: _setCollisionStrategy,
                       onChooseFiles: _chooseFiles,
                       onChooseDirectory: _chooseDirectory,
                       onRevealPath: _revealPath,
@@ -3825,6 +3847,7 @@ class _PreviewPanel extends StatelessWidget {
     required this.applying,
     required this.scanning,
     required this.dragging,
+    required this.dropEnabled,
     required this.onChooseFiles,
     required this.onChooseDirectory,
     required this.onSaveFileList,
@@ -3876,6 +3899,7 @@ class _PreviewPanel extends StatelessWidget {
   final bool applying;
   final bool scanning;
   final bool dragging;
+  final bool dropEnabled;
   final VoidCallback onChooseFiles;
   final VoidCallback onChooseDirectory;
   final VoidCallback onSaveFileList;
@@ -3954,6 +3978,7 @@ class _PreviewPanel extends StatelessWidget {
       focusNode: focusNode,
       onKeyEvent: onKeyEvent,
       child: DropTarget(
+        enable: dropEnabled,
         onDragEntered: (_) => onDragEntered(),
         onDragExited: (_) => onDragExited(),
         onDragDone: (detail) => onDrop(detail.files),

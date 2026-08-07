@@ -24,6 +24,7 @@ type PreviewOrganizationRequest struct {
 	ItemIds              []string `json:"itemIds"`
 	SourcePaths          []string `json:"sourcePaths"`
 	DestinationFolderIds []string `json:"destinationFolderIds"`
+	CollisionStrategy    string   `json:"collisionStrategy"`
 }
 
 func (PreviewOrganizationRequest) ValidatePayload(payload []byte) error {

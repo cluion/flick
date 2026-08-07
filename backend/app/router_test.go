@@ -133,6 +133,7 @@ func TestGeneratedApplicationPreviewsAndAppliesOrganizationPlans(t *testing.T) {
 		"itemIds":              []string{"item-1"},
 		"sourcePaths":          []string{source},
 		"destinationFolderIds": []string{"photos"},
+		"collisionStrategy":    "fail",
 	})
 	if err != nil {
 		t.Fatalf("marshal params: %v", err)
@@ -151,15 +152,18 @@ func TestGeneratedApplicationPreviewsAndAppliesOrganizationPlans(t *testing.T) {
 		t.Fatalf("marshal result: %v", err)
 	}
 	var result struct {
-		PlanID             string   `json:"planId"`
-		TargetPaths        []string `json:"targetPaths"`
-		FolderCreated      []bool   `json:"folderCreated"`
-		ItemStatuses       []string `json:"itemStatuses"`
-		ItemOperationKinds []string `json:"itemOperationKinds"`
-		ItemCrossVolume    []bool   `json:"itemCrossVolume"`
-		MkdirCount         int      `json:"mkdirCount"`
-		MoveCount          int      `json:"moveCount"`
-		ErrorCount         int      `json:"errorCount"`
+		PlanID                string   `json:"planId"`
+		TargetPaths           []string `json:"targetPaths"`
+		FolderCreated         []bool   `json:"folderCreated"`
+		ItemStatuses          []string `json:"itemStatuses"`
+		ItemOperationKinds    []string `json:"itemOperationKinds"`
+		ItemCrossVolume       []bool   `json:"itemCrossVolume"`
+		ItemCategories        []string `json:"itemCategories"`
+		ItemCategoryReasons   []string `json:"itemCategoryReasons"`
+		ItemCollisionResolved []bool   `json:"itemCollisionResolved"`
+		MkdirCount            int      `json:"mkdirCount"`
+		MoveCount             int      `json:"moveCount"`
+		ErrorCount            int      `json:"errorCount"`
 	}
 	if err := json.Unmarshal(encoded, &result); err != nil {
 		t.Fatalf("unmarshal result: %v", err)
@@ -170,6 +174,11 @@ func TestGeneratedApplicationPreviewsAndAppliesOrganizationPlans(t *testing.T) {
 		len(result.ItemStatuses) != 1 || result.ItemStatuses[0] != "ready" ||
 		len(result.ItemOperationKinds) != 1 || result.ItemOperationKinds[0] != "move" ||
 		len(result.ItemCrossVolume) != 1 || result.ItemCrossVolume[0] ||
+		len(result.ItemCategories) != 1 || result.ItemCategories[0] != "image" ||
+		len(result.ItemCategoryReasons) != 1 ||
+		result.ItemCategoryReasons[0] != "extension:.jpg" ||
+		len(result.ItemCollisionResolved) != 1 ||
+		result.ItemCollisionResolved[0] ||
 		result.MkdirCount != 1 || result.MoveCount != 1 || result.ErrorCount != 0 {
 		t.Fatalf("organization preview = %#v", result)
 	}

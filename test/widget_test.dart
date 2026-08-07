@@ -37,12 +37,14 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 
 class FakeBackend implements BackendGateway {
   final List<PreviewRenameRequest> previewRequests = [];
+  final List<ScanDirectoriesRequest> directoryScanRequests = [];
   final List<PreviewOrganizationRequest> organizationPreviewRequests = [];
   final List<ApplyOrganizationRequest> organizationApplyRequests = [];
   final List<UndoOrganizationRequest> organizationUndoRequests = [];
   OrganizationPlan? lastOrganizationPlan;
   String? organizationItemError;
   bool organizationCrossVolume = false;
+  bool organizationDuplicateTargets = false;
   bool organizationBatchExists = false;
   bool organizationUndoable = false;
 
@@ -57,7 +59,7 @@ class FakeBackend implements BackendGateway {
     return const HealthInfo(
       status: 'ok',
       frameworkVersion: '0.11.0',
-      protocolVersion: 7,
+      protocolVersion: 9,
       runtime: 'Go sidecar',
       architecture: 'Middleware -> Controller -> Service',
     );
@@ -68,6 +70,7 @@ class FakeBackend implements BackendGateway {
     ScanDirectoriesRequest request, {
     RpcCancellationToken? cancellationToken,
   }) async {
+    directoryScanRequests.add(request);
     return const DirectoryScanResult(paths: [], skippedCount: 0);
   }
 
@@ -92,6 +95,7 @@ class FakeBackend implements BackendGateway {
     final statuses = <String>[];
     final messages = <String>[];
     final operationKinds = <String>[];
+    final collisionResolved = List.filled(request.itemIds.length, false);
     for (var index = 0; index < request.itemIds.length; index++) {
       final destinationId = request.destinationFolderIds[index];
       if (destinationId.isEmpty) {
@@ -104,22 +108,50 @@ class FakeBackend implements BackendGateway {
       final folderIndex = request.folderIds.indexOf(destinationId);
       final targetPath = joinOrganizationPath(
         folderPaths[folderIndex],
-        organizationFileName(request.sourcePaths[index]),
+        organizationDuplicateTargets
+            ? 'same.txt'
+            : organizationFileName(request.sourcePaths[index]),
       );
       targetPaths.add(targetPath);
       statuses.add(organizationItemError == null ? 'ready' : 'error');
       messages.add(organizationItemError ?? '');
       operationKinds.add('move');
     }
-    final targetIndexes = <String, List<int>>{};
-    for (var index = 0; index < targetPaths.length; index++) {
-      targetIndexes.putIfAbsent(targetPaths[index], () => []).add(index);
-    }
-    for (final indexes in targetIndexes.values) {
-      if (indexes.length < 2) continue;
-      for (final index in indexes) {
-        statuses[index] = 'error';
-        messages[index] = 'Multiple files would occupy the same target path.';
+    if (request.collisionStrategy == 'appendNumber') {
+      final assigned = <String>{};
+      for (var index = 0; index < targetPaths.length; index++) {
+        if (operationKinds[index] != 'move' || statuses[index] == 'error') {
+          continue;
+        }
+        final original = targetPaths[index];
+        var candidate = original;
+        var sequence = 2;
+        while (assigned.contains(candidate) ||
+            FileSystemEntity.typeSync(candidate, followLinks: false) !=
+                FileSystemEntityType.notFound) {
+          candidate = joinOrganizationPath(
+            File(original).parent.path,
+            _numberedName(organizationFileName(original), sequence++),
+          );
+          collisionResolved[index] = true;
+        }
+        assigned.add(candidate);
+        targetPaths[index] = candidate;
+        if (collisionResolved[index]) {
+          messages[index] = 'The collision was resolved by appending a number.';
+        }
+      }
+    } else {
+      final targetIndexes = <String, List<int>>{};
+      for (var index = 0; index < targetPaths.length; index++) {
+        targetIndexes.putIfAbsent(targetPaths[index], () => []).add(index);
+      }
+      for (final indexes in targetIndexes.values) {
+        if (indexes.length < 2) continue;
+        for (final index in indexes) {
+          statuses[index] = 'error';
+          messages[index] = 'Multiple files would occupy the same target path.';
+        }
       }
     }
     final moveCount = List.generate(
@@ -159,6 +191,17 @@ class FakeBackend implements BackendGateway {
             operationKinds[index] == 'move' &&
             organizationCrossVolume,
       ),
+      itemCategories: request.sourcePaths
+          .map(_fakeOrganizationCategory)
+          .toList(growable: false),
+      itemCategoryReasons: request.sourcePaths
+          .map(
+            (path) => _fakeOrganizationCategory(path) == 'other'
+                ? 'unknown'
+                : 'extension:${_fakeExtension(path)}',
+          )
+          .toList(growable: false),
+      itemCollisionResolved: collisionResolved,
       sizes: List.generate(request.itemIds.length, (_) => 7),
       modifiedAt: List.generate(request.itemIds.length, (_) => 100),
       mkdirCount: folderCreated.where((value) => value).length,
@@ -309,6 +352,23 @@ class FakeBackend implements BackendGateway {
     return '${name.substring(0, dot)} ($sequence)${name.substring(dot)}';
   }
 
+  static String _fakeOrganizationCategory(String path) {
+    return switch (_fakeExtension(path)) {
+      '.jpg' || '.jpeg' || '.png' => 'image',
+      '.mp4' || '.mov' || '.mkv' => 'video',
+      '.mp3' || '.wav' || '.flac' => 'audio',
+      '.txt' || '.md' || '.pdf' => 'document',
+      '.zip' || '.7z' || '.rar' => 'archive',
+      _ => 'other',
+    };
+  }
+
+  static String _fakeExtension(String path) {
+    final name = _fileName(path);
+    final dot = name.lastIndexOf('.');
+    return dot <= 0 ? '' : name.substring(dot).toLowerCase();
+  }
+
   @override
   Future<ApplyRenameResult> applyRename(
     ApplyRenameRequest request, {
@@ -407,7 +467,7 @@ void main() {
     expect(find.text('v0.3.0 (4)'), findsOneWidget);
     expect(find.text('本機引擎就緒'), findsOneWidget);
     expect(
-      find.byTooltip('Go sidecar · Bridra 0.11.0 · Protocol 7'),
+      find.byTooltip('Go sidecar · Bridra 0.11.0 · Protocol 9'),
       findsOneWidget,
     );
     expect(find.text('改名規則'), findsOneWidget);
@@ -591,12 +651,310 @@ void main() {
     expect(find.text('最終路徑已被其他項目占用'), findsOneWidget);
     expect(find.text('待處理'), findsOneWidget);
     expect(find.text('1 待處理'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('organization-folder-errors')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('organization-folder-errors-圖片')),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const ValueKey('organization-folder-root')));
+    await tester.pumpAndSettle();
+    expect(find.text('最終路徑已被其他項目占用'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('organization-error-count')));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<Text>(
+            find.byKey(const ValueKey('organization-item-panel-title')),
+          )
+          .data,
+      '全部待處理',
+    );
+    expect(find.text('最終路徑已被其他項目占用'), findsOneWidget);
     expect(find.text('開始整理'), findsOneWidget);
     expect(file.readAsStringSync(), 'original');
     expect(
       Directory(joinOrganizationPath(directory.path, '圖片')).existsSync(),
       isFalse,
     );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('handles a directory drop with one confirmation dialog', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(1280, 820);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final directory = Directory.systemTemp.createTempSync(
+      'flick-directory-drop-',
+    );
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final backend = FakeBackend();
+
+    await tester.pumpWidget(FlickApp(connector: () async => backend));
+    await tester.pumpAndSettle();
+    final targets = tester
+        .widgetList<DropTarget>(find.byType(DropTarget, skipOffstage: false))
+        .toList(growable: false);
+    expect(targets, hasLength(2));
+    expect(targets.where((target) => target.enable), hasLength(1));
+    final details = DropDoneDetails(
+      files: [DropItemFile(directory.path)],
+      localPosition: Offset.zero,
+      globalPosition: Offset.zero,
+    );
+    await tester.runAsync(() async {
+      for (final target in targets) {
+        target.onDragDone?.call(details);
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+    await tester.pumpAndSettle();
+
+    expect(find.text('匯入資料夾'), findsOneWidget);
+    expect(find.text('開始掃描'), findsOneWidget);
+    await tester.tap(find.text('開始掃描'));
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('匯入資料夾'), findsNothing);
+    expect(backend.directoryScanRequests, hasLength(1));
+    expect(backend.directoryScanRequests.single.directories, [directory.path]);
+    await tester.tap(find.byKey(const ValueKey('workspace-mode-organize')));
+    await tester.pumpAndSettle();
+    final organizeTargets = tester
+        .widgetList<DropTarget>(find.byType(DropTarget, skipOffstage: false))
+        .toList(growable: false);
+    expect(organizeTargets, hasLength(2));
+    expect(organizeTargets.where((target) => target.enable), hasLength(1));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('numbers organization collisions without overwriting', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(800, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final directory = Directory.systemTemp.createTempSync(
+      'flick-organize-number-',
+    );
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final first = File('${directory.path}/one.txt')..writeAsStringSync('first');
+    final second = File('${directory.path}/two.txt')
+      ..writeAsStringSync('second');
+    final backend = FakeBackend()..organizationDuplicateTargets = true;
+
+    await tester.pumpWidget(FlickApp(connector: () async => backend));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('workspace-mode-organize')));
+    await tester.pumpAndSettle();
+    await _dropFiles(tester, [first.path, second.path], backend);
+    await _pumpAsyncWork(tester);
+    await tester.tap(find.byKey(const ValueKey('organization-new-folder')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('virtual-folder-name-field')),
+      '文件',
+    );
+    await tester.tap(find.text('建立'));
+    await tester.pumpAndSettle();
+    final folder = find.byKey(const ValueKey('organization-folder-0'));
+    await _dragTo(
+      tester,
+      find.byKey(const ValueKey('organization-item-0')),
+      folder,
+    );
+    await _pumpAsyncWork(tester);
+    await _dragTo(
+      tester,
+      find.byKey(const ValueKey('organization-item-1')),
+      folder,
+    );
+    await _pumpAsyncWork(tester);
+
+    expect(backend.organizationPreviewRequests.last.collisionStrategy, 'fail');
+    expect(backend.lastOrganizationPlan?.errorCount, 2);
+    await tester.tap(
+      find.byKey(const ValueKey('organization-collision-strategy')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('自動附加流水號').last);
+    await _pumpAsyncWork(tester);
+
+    expect(
+      backend.organizationPreviewRequests.last.collisionStrategy,
+      'appendNumber',
+    );
+    expect(backend.lastOrganizationPlan?.errorCount, 0);
+    expect(backend.lastOrganizationPlan?.itemCollisionResolved, [false, true]);
+    await tester.tap(folder);
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<Text>(
+            find.byKey(
+              const ValueKey('organization-target-organization-item-1'),
+            ),
+          )
+          .data,
+      endsWith('same (2).txt'),
+    );
+    expect(find.text('已加編號'), findsOneWidget);
+    final applyButton = find.byKey(const ValueKey('apply-organization'));
+    expect(tester.widget<FilledButton>(applyButton).onPressed, isNotNull);
+    expect(first.readAsStringSync(), 'first');
+    expect(second.readAsStringSync(), 'second');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('classifies every unassigned file into quick folders', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(800, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final directory = Directory.systemTemp.createTempSync('flick-categories-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final files =
+        [
+              'photo.jpg',
+              'movie.mp4',
+              'song.mp3',
+              'report.pdf',
+              'bundle.zip',
+              'mystery.bin',
+            ]
+            .map(
+              (name) =>
+                  File('${directory.path}/$name')..writeAsStringSync(name),
+            )
+            .toList(growable: false);
+    final backend = FakeBackend();
+
+    await tester.pumpWidget(FlickApp(connector: () async => backend));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('workspace-mode-organize')));
+    await tester.pumpAndSettle();
+    await _dropFiles(
+      tester,
+      files.map((file) => file.path).toList(growable: false),
+      backend,
+    );
+    await _pumpAsyncWork(tester);
+
+    expect(backend.lastOrganizationPlan?.itemCategories, [
+      'image',
+      'video',
+      'audio',
+      'document',
+      'archive',
+      'other',
+    ]);
+    expect(
+      backend.lastOrganizationPlan?.itemCategoryReasons,
+      everyElement(isNotEmpty),
+    );
+    expect(
+      find.byKey(const ValueKey('organization-category-organization-item-0')),
+      findsOneWidget,
+    );
+    expect(find.text('圖片 1'), findsOneWidget);
+    expect(find.text('影片 1'), findsOneWidget);
+    expect(find.text('音訊 1'), findsOneWidget);
+    expect(find.text('文件 1'), findsOneWidget);
+    expect(find.text('壓縮檔 1'), findsOneWidget);
+    expect(find.text('其他 1'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('organization-classify-all')));
+    await _pumpAsyncWork(tester);
+
+    expect(backend.organizationPreviewRequests.last.folderNames, [
+      '圖片',
+      '影片',
+      '音訊',
+      '文件',
+      '壓縮檔',
+      '其他',
+    ]);
+    expect(
+      backend.organizationPreviewRequests.last.destinationFolderIds.toSet(),
+      hasLength(6),
+    );
+    expect(
+      backend.organizationPreviewRequests.last.destinationFolderIds,
+      isNot(contains('')),
+    );
+    expect(find.textContaining('已依偵測結果規劃 6 個檔案'), findsOneWidget);
+    for (final folder in const ['圖片', '影片', '音訊', '文件', '壓縮檔', '其他']) {
+      expect(Directory('${directory.path}/$folder').existsSync(), isFalse);
+    }
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('quick classification preserves manual folder placement', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(800, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final directory = Directory.systemTemp.createTempSync(
+      'flick-category-manual-',
+    );
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final photo = File('${directory.path}/photo.jpg')
+      ..writeAsStringSync('photo');
+    final movie = File('${directory.path}/movie.mp4')
+      ..writeAsStringSync('movie');
+    final backend = FakeBackend();
+
+    await tester.pumpWidget(FlickApp(connector: () async => backend));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('workspace-mode-organize')));
+    await tester.pumpAndSettle();
+    await _dropFiles(tester, [photo.path, movie.path], backend);
+    await _pumpAsyncWork(tester);
+    await tester.tap(find.byKey(const ValueKey('organization-new-folder')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('virtual-folder-name-field')),
+      '精選',
+    );
+    await tester.tap(find.text('建立'));
+    await tester.pumpAndSettle();
+    await _dragTo(
+      tester,
+      find.byKey(const ValueKey('organization-item-0')),
+      find.byKey(const ValueKey('organization-folder-0')),
+    );
+    await _pumpAsyncWork(tester);
+
+    expect(find.text('圖片 0'), findsOneWidget);
+    expect(find.text('影片 1'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('organization-classify-all')));
+    await _pumpAsyncWork(tester);
+
+    expect(backend.organizationPreviewRequests.last.folderNames, ['精選', '影片']);
+    expect(backend.organizationPreviewRequests.last.destinationFolderIds, [
+      'organization-folder-0',
+      'organization-folder-1',
+    ]);
+    expect(photo.existsSync(), isTrue);
+    expect(movie.existsSync(), isTrue);
     expect(tester.takeException(), isNull);
   });
 

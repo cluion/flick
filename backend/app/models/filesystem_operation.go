@@ -10,6 +10,13 @@ const (
 
 	FilesystemOperationMkdir = "mkdir"
 	FilesystemOperationMove  = "move"
+
+	OrganizationCategoryImage    = "image"
+	OrganizationCategoryVideo    = "video"
+	OrganizationCategoryAudio    = "audio"
+	OrganizationCategoryDocument = "document"
+	OrganizationCategoryArchive  = "archive"
+	OrganizationCategoryOther    = "other"
 )
 
 type FilesystemOperation struct {
@@ -39,6 +46,9 @@ type PlannedOrganizationItem struct {
 	Message             string
 	OperationKind       string
 	CrossVolume         bool
+	Category            string
+	CategoryReason      string
+	CollisionResolved   bool
 	Size                int64
 	ModifiedAt          int64
 }

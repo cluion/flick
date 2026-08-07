@@ -161,7 +161,14 @@ func (controller *OrganizationController) Preview(
 			DestinationFolderID: request.DestinationFolderIds[index],
 		}
 	}
-	plan, err := controller.service.Preview(request.RootPath, folders, items)
+	plan, err := controller.service.PreviewWithOptions(
+		request.RootPath,
+		folders,
+		items,
+		services.OrganizationPreviewOptions{
+			CollisionStrategy: request.CollisionStrategy,
+		},
+	)
 	if err != nil {
 		return nil, renderRenameError(err)
 	}
@@ -172,23 +179,26 @@ func newOrganizationPlanResponse(
 	plan models.FilesystemOperationPlan,
 ) responses.OrganizationPlanResponse {
 	response := responses.OrganizationPlanResponse{
-		PlanId:             plan.ID,
-		RootPath:           plan.RootPath,
-		FolderIds:          make([]string, 0, len(plan.Folders)),
-		FolderNames:        make([]string, 0, len(plan.Folders)),
-		FolderPaths:        make([]string, 0, len(plan.Folders)),
-		FolderStatuses:     make([]string, 0, len(plan.Folders)),
-		FolderMessages:     make([]string, 0, len(plan.Folders)),
-		FolderCreated:      make([]bool, 0, len(plan.Folders)),
-		ItemIds:            make([]string, 0, len(plan.Items)),
-		SourcePaths:        make([]string, 0, len(plan.Items)),
-		TargetPaths:        make([]string, 0, len(plan.Items)),
-		ItemStatuses:       make([]string, 0, len(plan.Items)),
-		ItemMessages:       make([]string, 0, len(plan.Items)),
-		ItemOperationKinds: make([]string, 0, len(plan.Items)),
-		ItemCrossVolume:    make([]bool, 0, len(plan.Items)),
-		Sizes:              make([]int, 0, len(plan.Items)),
-		ModifiedAt:         make([]int, 0, len(plan.Items)),
+		PlanId:                plan.ID,
+		RootPath:              plan.RootPath,
+		FolderIds:             make([]string, 0, len(plan.Folders)),
+		FolderNames:           make([]string, 0, len(plan.Folders)),
+		FolderPaths:           make([]string, 0, len(plan.Folders)),
+		FolderStatuses:        make([]string, 0, len(plan.Folders)),
+		FolderMessages:        make([]string, 0, len(plan.Folders)),
+		FolderCreated:         make([]bool, 0, len(plan.Folders)),
+		ItemIds:               make([]string, 0, len(plan.Items)),
+		SourcePaths:           make([]string, 0, len(plan.Items)),
+		TargetPaths:           make([]string, 0, len(plan.Items)),
+		ItemStatuses:          make([]string, 0, len(plan.Items)),
+		ItemMessages:          make([]string, 0, len(plan.Items)),
+		ItemOperationKinds:    make([]string, 0, len(plan.Items)),
+		ItemCrossVolume:       make([]bool, 0, len(plan.Items)),
+		ItemCategories:        make([]string, 0, len(plan.Items)),
+		ItemCategoryReasons:   make([]string, 0, len(plan.Items)),
+		ItemCollisionResolved: make([]bool, 0, len(plan.Items)),
+		Sizes:                 make([]int, 0, len(plan.Items)),
+		ModifiedAt:            make([]int, 0, len(plan.Items)),
 	}
 	for _, folder := range plan.Folders {
 		response.FolderIds = append(response.FolderIds, folder.ID)
@@ -214,6 +224,18 @@ func newOrganizationPlanResponse(
 		response.ItemCrossVolume = append(
 			response.ItemCrossVolume,
 			item.CrossVolume,
+		)
+		response.ItemCategories = append(
+			response.ItemCategories,
+			item.Category,
+		)
+		response.ItemCategoryReasons = append(
+			response.ItemCategoryReasons,
+			item.CategoryReason,
+		)
+		response.ItemCollisionResolved = append(
+			response.ItemCollisionResolved,
+			item.CollisionResolved,
 		)
 		response.Sizes = append(response.Sizes, int(item.Size))
 		response.ModifiedAt = append(response.ModifiedAt, int(item.ModifiedAt))

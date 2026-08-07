@@ -1,5 +1,26 @@
 import 'dart:io';
 
+enum OrganizationCategory {
+  image('image', '圖片'),
+  video('video', '影片'),
+  audio('audio', '音訊'),
+  document('document', '文件'),
+  archive('archive', '壓縮檔'),
+  other('other', '其他');
+
+  const OrganizationCategory(this.wireName, this.folderName);
+
+  final String wireName;
+  final String folderName;
+
+  static OrganizationCategory? fromWireName(String value) {
+    for (final category in values) {
+      if (category.wireName == value) return category;
+    }
+    return null;
+  }
+}
+
 class VirtualOrganizationFolder {
   const VirtualOrganizationFolder({required this.id, required this.name});
 
@@ -112,6 +133,36 @@ class OrganizationWorkspaceDraft {
               destinationFolderId: destinationFolderId,
               clearDestination: destinationFolderId == null,
             )
+          else
+            item,
+      ]),
+    );
+  }
+
+  OrganizationWorkspaceDraft assignItems(
+    Iterable<String> itemIds,
+    String destinationFolderId,
+  ) {
+    if (!folders.any((folder) => folder.id == destinationFolderId)) {
+      throw ArgumentError.value(
+        destinationFolderId,
+        'destinationFolderId',
+        'does not exist',
+      );
+    }
+    final ids = itemIds.toSet();
+    final knownIds = items.map((item) => item.id).toSet();
+    final unknown = ids.difference(knownIds);
+    if (unknown.isNotEmpty) {
+      throw ArgumentError.value(unknown.first, 'itemIds', 'does not exist');
+    }
+    if (ids.isEmpty) return this;
+    return OrganizationWorkspaceDraft(
+      folders: folders,
+      items: List.unmodifiable([
+        for (final item in items)
+          if (ids.contains(item.id))
+            item.copyWith(destinationFolderId: destinationFolderId)
           else
             item,
       ]),

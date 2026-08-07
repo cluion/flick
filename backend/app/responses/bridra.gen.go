@@ -16,28 +16,31 @@ type ScanDirectoriesResponse struct {
 }
 
 type OrganizationPlanResponse struct {
-	PlanId             string   `json:"planId"`
-	RootPath           string   `json:"rootPath"`
-	FolderIds          []string `json:"folderIds"`
-	FolderNames        []string `json:"folderNames"`
-	FolderPaths        []string `json:"folderPaths"`
-	FolderStatuses     []string `json:"folderStatuses"`
-	FolderMessages     []string `json:"folderMessages"`
-	FolderCreated      []bool   `json:"folderCreated"`
-	ItemIds            []string `json:"itemIds"`
-	SourcePaths        []string `json:"sourcePaths"`
-	TargetPaths        []string `json:"targetPaths"`
-	ItemStatuses       []string `json:"itemStatuses"`
-	ItemMessages       []string `json:"itemMessages"`
-	ItemOperationKinds []string `json:"itemOperationKinds"`
-	ItemCrossVolume    []bool   `json:"itemCrossVolume"`
-	Sizes              []int    `json:"sizes"`
-	ModifiedAt         []int    `json:"modifiedAt"`
-	MkdirCount         int      `json:"mkdirCount"`
-	MoveCount          int      `json:"moveCount"`
-	UnchangedCount     int      `json:"unchangedCount"`
-	ErrorCount         int      `json:"errorCount"`
-	CrossVolumeCount   int      `json:"crossVolumeCount"`
+	PlanId                string   `json:"planId"`
+	RootPath              string   `json:"rootPath"`
+	FolderIds             []string `json:"folderIds"`
+	FolderNames           []string `json:"folderNames"`
+	FolderPaths           []string `json:"folderPaths"`
+	FolderStatuses        []string `json:"folderStatuses"`
+	FolderMessages        []string `json:"folderMessages"`
+	FolderCreated         []bool   `json:"folderCreated"`
+	ItemIds               []string `json:"itemIds"`
+	SourcePaths           []string `json:"sourcePaths"`
+	TargetPaths           []string `json:"targetPaths"`
+	ItemStatuses          []string `json:"itemStatuses"`
+	ItemMessages          []string `json:"itemMessages"`
+	ItemOperationKinds    []string `json:"itemOperationKinds"`
+	ItemCrossVolume       []bool   `json:"itemCrossVolume"`
+	ItemCategories        []string `json:"itemCategories"`
+	ItemCategoryReasons   []string `json:"itemCategoryReasons"`
+	ItemCollisionResolved []bool   `json:"itemCollisionResolved"`
+	Sizes                 []int    `json:"sizes"`
+	ModifiedAt            []int    `json:"modifiedAt"`
+	MkdirCount            int      `json:"mkdirCount"`
+	MoveCount             int      `json:"moveCount"`
+	UnchangedCount        int      `json:"unchangedCount"`
+	ErrorCount            int      `json:"errorCount"`
+	CrossVolumeCount      int      `json:"crossVolumeCount"`
 }
 
 type ApplyOrganizationResponse struct {

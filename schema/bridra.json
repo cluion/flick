@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "protocolVersion": 7,
+  "protocolVersion": 9,
   "methods": [
     {
       "name": "system.health",
@@ -51,7 +51,8 @@
           {"name": "folderNames", "type": "string", "array": true},
           {"name": "itemIds", "type": "string", "array": true},
           {"name": "sourcePaths", "type": "string", "array": true},
-          {"name": "destinationFolderIds", "type": "string", "array": true}
+          {"name": "destinationFolderIds", "type": "string", "array": true},
+          {"name": "collisionStrategy", "type": "string"}
         ]
       },
       "result": {
@@ -73,6 +74,9 @@
           {"name": "itemMessages", "type": "string", "array": true},
           {"name": "itemOperationKinds", "type": "string", "array": true},
           {"name": "itemCrossVolume", "type": "boolean", "array": true},
+          {"name": "itemCategories", "type": "string", "array": true},
+          {"name": "itemCategoryReasons", "type": "string", "array": true},
+          {"name": "itemCollisionResolved", "type": "boolean", "array": true},
           {"name": "sizes", "type": "integer", "array": true},
           {"name": "modifiedAt", "type": "integer", "array": true},
           {"name": "mkdirCount", "type": "integer"},

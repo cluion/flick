@@ -54,6 +54,32 @@ void main() {
     expect(draft.itemsInFolder('folder').single.id, 'one');
   });
 
+  test('assigns a category group without mutating the previous draft', () {
+    const draft = OrganizationWorkspaceDraft(
+      folders: [VirtualOrganizationFolder(id: 'images', name: '圖片')],
+      items: [
+        OrganizationWorkspaceItem(id: 'one', sourcePath: '/tmp/one.jpg'),
+        OrganizationWorkspaceItem(id: 'two', sourcePath: '/tmp/two.jpg'),
+        OrganizationWorkspaceItem(id: 'three', sourcePath: '/tmp/three.txt'),
+      ],
+    );
+
+    final assigned = draft.assignItems(const ['one', 'two'], 'images');
+
+    expect(assigned.itemsInFolder('images').map((item) => item.id), [
+      'one',
+      'two',
+    ]);
+    expect(assigned.itemsInFolder(null).single.id, 'three');
+    expect(draft.itemsInFolder(null), hasLength(3));
+  });
+
+  test('maps backend category names to localized folder defaults', () {
+    expect(OrganizationCategory.fromWireName('image')?.folderName, '圖片');
+    expect(OrganizationCategory.fromWireName('archive')?.folderName, '壓縮檔');
+    expect(OrganizationCategory.fromWireName('unsupported'), isNull);
+  });
+
   test('previews exact target paths while unassigned files stay in place', () {
     const item = OrganizationWorkspaceItem(
       id: 'one',

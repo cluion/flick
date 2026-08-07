@@ -43,6 +43,8 @@ func TestOrganizationServiceBuildsPreviewOnlyOperationDependencies(t *testing.T)
 		plan.Items[0].Status != models.OperationStatusReady ||
 		plan.Items[0].OperationKind != models.FilesystemOperationMove ||
 		plan.Items[0].CrossVolume ||
+		plan.Items[0].Category != models.OrganizationCategoryImage ||
+		plan.Items[0].CategoryReason != "extension:.jpg" ||
 		plan.Items[0].Size != int64(len("fixture")) ||
 		plan.Items[0].ModifiedAt <= 0 {
 		t.Fatalf("item = %#v", plan.Items)
@@ -147,6 +149,117 @@ func TestOrganizationServiceRejectsDuplicateAndOccupiedTargets(t *testing.T) {
 		occupied.Items[0].Message != "An unrelated item already occupies the target path." {
 		t.Fatalf("occupied item = %#v", occupied.Items[0])
 	}
+}
+
+func TestOrganizationServiceAppendsNumbersToOrganizationCollisions(t *testing.T) {
+	root := t.TempDir()
+	firstDirectory := filepath.Join(root, "first")
+	secondDirectory := filepath.Join(root, "second")
+	if err := os.Mkdir(firstDirectory, 0o700); err != nil {
+		t.Fatalf("mkdir first: %v", err)
+	}
+	if err := os.Mkdir(secondDirectory, 0o700); err != nil {
+		t.Fatalf("mkdir second: %v", err)
+	}
+	first := filepath.Join(firstDirectory, "same.txt")
+	second := filepath.Join(secondDirectory, "same.txt")
+	if err := os.WriteFile(first, []byte("first"), 0o600); err != nil {
+		t.Fatalf("write first: %v", err)
+	}
+	if err := os.WriteFile(second, []byte("second"), 0o600); err != nil {
+		t.Fatalf("write second: %v", err)
+	}
+	service := NewOrganizationServiceAt(
+		filepath.Join(t.TempDir(), "operation-history.json"),
+	)
+	plan, err := service.PreviewWithOptions(
+		root,
+		[]OrganizationFolderInput{{ID: "sorted", Name: "Sorted"}},
+		[]OrganizationItemInput{
+			{ID: "first", SourcePath: first, DestinationFolderID: "sorted"},
+			{ID: "second", SourcePath: second, DestinationFolderID: "sorted"},
+		},
+		OrganizationPreviewOptions{
+			CollisionStrategy: CollisionStrategyAppendNumber,
+		},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if plan.Items[0].Status != models.OperationStatusReady ||
+		plan.Items[1].Status != models.OperationStatusReady ||
+		plan.Items[0].TargetPath != filepath.Join(root, "Sorted", "same.txt") ||
+		plan.Items[0].CollisionResolved ||
+		plan.Items[1].TargetPath != filepath.Join(root, "Sorted", "same (2).txt") ||
+		!plan.Items[1].CollisionResolved {
+		t.Fatalf("numbered plan = %#v", plan.Items)
+	}
+	if _, err := service.Apply(plan.ID); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	firstContent, firstErr := os.ReadFile(filepath.Join(root, "Sorted", "same.txt"))
+	secondContent, secondErr := os.ReadFile(
+		filepath.Join(root, "Sorted", "same (2).txt"),
+	)
+	if firstErr != nil || secondErr != nil || string(firstContent) != "first" ||
+		string(secondContent) != "second" {
+		t.Fatalf(
+			"numbered apply first=%q second=%q firstErr=%v secondErr=%v",
+			firstContent,
+			secondContent,
+			firstErr,
+			secondErr,
+		)
+	}
+}
+
+func TestOrganizationServiceNumbersPastExistingTargets(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, "Sorted")
+	incoming := filepath.Join(root, "Incoming")
+	if err := os.Mkdir(destination, 0o700); err != nil {
+		t.Fatalf("mkdir destination: %v", err)
+	}
+	if err := os.Mkdir(incoming, 0o700); err != nil {
+		t.Fatalf("mkdir incoming: %v", err)
+	}
+	writeOrganizationFixture(t, filepath.Join(destination, "same.txt"))
+	writeOrganizationFixture(t, filepath.Join(destination, "same (2).txt"))
+	source := writeOrganizationFixture(t, filepath.Join(incoming, "same.txt"))
+	service := newOrganizationServiceForTest(t)
+	plan, err := service.PreviewWithOptions(
+		root,
+		[]OrganizationFolderInput{{ID: "sorted", Name: "Sorted"}},
+		[]OrganizationItemInput{{
+			ID:                  "incoming",
+			SourcePath:          source,
+			DestinationFolderID: "sorted",
+		}},
+		OrganizationPreviewOptions{
+			CollisionStrategy: CollisionStrategyAppendNumber,
+		},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if plan.Items[0].Status != models.OperationStatusReady ||
+		plan.Items[0].TargetPath != filepath.Join(destination, "same (3).txt") ||
+		!plan.Items[0].CollisionResolved {
+		t.Fatalf("existing target plan = %#v", plan.Items[0])
+	}
+}
+
+func TestOrganizationServiceRejectsUnknownCollisionStrategy(t *testing.T) {
+	root := t.TempDir()
+	source := writeOrganizationFixture(t, filepath.Join(root, "photo.jpg"))
+	service := newOrganizationServiceForTest(t)
+	_, err := service.PreviewWithOptions(
+		root,
+		nil,
+		[]OrganizationItemInput{{ID: "photo", SourcePath: source}},
+		OrganizationPreviewOptions{CollisionStrategy: "overwrite"},
+	)
+	assertOrganizationUserErrorCode(t, err, "invalid_collision_strategy")
 }
 
 func TestOrganizationServiceAllowsTargetsMovedAwayByTheSamePlan(t *testing.T) {

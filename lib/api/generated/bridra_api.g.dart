@@ -2,7 +2,7 @@
 
 import 'package:bridra_flutter/bridra_flutter.dart';
 
-const supportedBackendProtocolVersion = 7;
+const supportedBackendProtocolVersion = 9;
 
 abstract final class BridraMethods {
   static const systemHealth = 'system.health';
@@ -69,6 +69,7 @@ class PreviewOrganizationRequest {
     required this.itemIds,
     required this.sourcePaths,
     required this.destinationFolderIds,
+    required this.collisionStrategy,
   });
 
   final String rootPath;
@@ -77,6 +78,7 @@ class PreviewOrganizationRequest {
   final List<String> itemIds;
   final List<String> sourcePaths;
   final List<String> destinationFolderIds;
+  final String collisionStrategy;
 
   Map<String, Object?> toJson() => {
     'rootPath': rootPath,
@@ -85,6 +87,7 @@ class PreviewOrganizationRequest {
     'itemIds': itemIds,
     'sourcePaths': sourcePaths,
     'destinationFolderIds': destinationFolderIds,
+    'collisionStrategy': collisionStrategy,
   };
 }
 
@@ -105,6 +108,9 @@ class OrganizationPlan {
     required this.itemMessages,
     required this.itemOperationKinds,
     required this.itemCrossVolume,
+    required this.itemCategories,
+    required this.itemCategoryReasons,
+    required this.itemCollisionResolved,
     required this.sizes,
     required this.modifiedAt,
     required this.mkdirCount,
@@ -129,6 +135,9 @@ class OrganizationPlan {
   final List<String> itemMessages;
   final List<String> itemOperationKinds;
   final List<bool> itemCrossVolume;
+  final List<String> itemCategories;
+  final List<String> itemCategoryReasons;
+  final List<bool> itemCollisionResolved;
   final List<int> sizes;
   final List<int> modifiedAt;
   final int mkdirCount;
@@ -439,6 +448,9 @@ class BridraRpcApi implements BridraApi {
         itemMessages: _requireListField<String>(result, 'itemMessages'),
         itemOperationKinds: _requireListField<String>(result, 'itemOperationKinds'),
         itemCrossVolume: _requireListField<bool>(result, 'itemCrossVolume'),
+        itemCategories: _requireListField<String>(result, 'itemCategories'),
+        itemCategoryReasons: _requireListField<String>(result, 'itemCategoryReasons'),
+        itemCollisionResolved: _requireListField<bool>(result, 'itemCollisionResolved'),
         sizes: _requireListField<int>(result, 'sizes'),
         modifiedAt: _requireListField<int>(result, 'modifiedAt'),
         mkdirCount: _requireField<int>(result, 'mkdirCount'),

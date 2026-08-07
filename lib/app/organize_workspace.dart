@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:bridra_flutter/bridra_flutter.dart' show RpcException;
 import 'package:desktop_drop/desktop_drop.dart' as desktop_drop;
@@ -6,6 +7,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import '../api/backend_gateway.dart';
+import '../domain/collision_strategy.dart';
 import '../domain/organization_workspace.dart';
 import 'flick_app.dart';
 
@@ -17,6 +19,8 @@ class OrganizeWorkspace extends StatefulWidget {
     required this.active,
     required this.enabled,
     required this.scanning,
+    required this.collisionStrategy,
+    required this.onCollisionStrategyChanged,
     required this.onChooseFiles,
     required this.onChooseDirectory,
     required this.onRevealPath,
@@ -31,6 +35,8 @@ class OrganizeWorkspace extends StatefulWidget {
   final bool active;
   final bool enabled;
   final bool scanning;
+  final CollisionStrategy collisionStrategy;
+  final ValueChanged<CollisionStrategy> onCollisionStrategyChanged;
   final VoidCallback onChooseFiles;
   final VoidCallback onChooseDirectory;
   final ValueChanged<String> onRevealPath;
@@ -58,6 +64,8 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
   var _applying = false;
   var _rootWasExplicit = false;
   var _draggingExternal = false;
+  var _showOnlyErrors = false;
+  final Map<OrganizationCategory, String> _categoryFolderIds = {};
 
   String _nextItemId() => 'organization-item-${_nextItemSequence++}';
 
@@ -79,13 +87,22 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
     final pathsChanged = oldWidget.paths != widget.paths;
     final backendChanged = oldWidget.backend != widget.backend;
     final activated = !oldWidget.active && widget.active;
-    if (!pathsChanged && !backendChanged && !activated) return;
+    final collisionStrategyChanged =
+        oldWidget.collisionStrategy != widget.collisionStrategy;
+    if (!pathsChanged &&
+        !backendChanged &&
+        !activated &&
+        !collisionStrategyChanged) {
+      return;
+    }
     if (pathsChanged && widget.paths.isEmpty) {
       _previewTimer?.cancel();
       _previewGeneration++;
       setState(() {
         _draft = const OrganizationWorkspaceDraft();
+        _categoryFolderIds.clear();
         _selectedFolderId = null;
+        _showOnlyErrors = false;
         _rootPath = null;
         _rootWasExplicit = false;
         _notice = null;
@@ -162,11 +179,13 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
           destinationFolderIds: _draft.items
               .map((item) => item.destinationFolderId ?? '')
               .toList(growable: false),
+          collisionStrategy: widget.collisionStrategy.wireName,
         ),
       );
       if (!mounted || generation != _previewGeneration) return;
       setState(() {
         _plan = plan;
+        if (plan.errorCount == 0) _showOnlyErrors = false;
         _error = null;
       });
     } on Object catch (error) {
@@ -324,10 +343,82 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
     _schedulePreview();
   }
 
+  void _classifyUnassigned(OrganizationCategory? requestedCategory) {
+    final plan = _plan;
+    if (plan == null || _previewing || _applying) return;
+    final itemIdsByCategory = _unassignedCategoryItemIds(plan, _draft);
+    final categories = requestedCategory == null
+        ? OrganizationCategory.values
+        : [requestedCategory];
+    var nextDraft = _draft;
+    final nextFolderIds = Map<OrganizationCategory, String>.of(
+      _categoryFolderIds,
+    );
+    var assignedCount = 0;
+    String? selectedFolderId;
+    for (final category in categories) {
+      final itemIds = itemIdsByCategory[category] ?? const <String>[];
+      if (itemIds.isEmpty) continue;
+      var folder = _categoryFolder(category, nextDraft, nextFolderIds);
+      if (folder == null) {
+        folder = VirtualOrganizationFolder(
+          id: 'organization-folder-${_nextFolderSequence++}',
+          name: category.folderName,
+        );
+        nextDraft = nextDraft.addFolder(folder);
+      }
+      nextFolderIds[category] = folder.id;
+      nextDraft = nextDraft.assignItems(itemIds, folder.id);
+      assignedCount += itemIds.length;
+      if (requestedCategory != null) selectedFolderId = folder.id;
+    }
+    if (assignedCount == 0) {
+      setState(() {
+        _notice = requestedCategory == null
+            ? '目前沒有尚未整理的檔案'
+            : '目前沒有尚未整理的「${requestedCategory.folderName}」檔案';
+        _error = null;
+      });
+      return;
+    }
+    setState(() {
+      _draft = nextDraft;
+      _categoryFolderIds
+        ..clear()
+        ..addAll(nextFolderIds);
+      if (selectedFolderId != null) _selectedFolderId = selectedFolderId;
+      _showOnlyErrors = false;
+      _notice = requestedCategory == null
+          ? '已依偵測結果規劃 $assignedCount 個檔案；套用前不會寫入磁碟'
+          : '已將 $assignedCount 個檔案規劃至「${requestedCategory.folderName}」';
+      _error = null;
+      _plan = null;
+    });
+    _schedulePreview(immediate: true);
+  }
+
+  VirtualOrganizationFolder? _categoryFolder(
+    OrganizationCategory category,
+    OrganizationWorkspaceDraft draft,
+    Map<OrganizationCategory, String> folderIds,
+  ) {
+    final mapped = draft.folderById(folderIds[category]);
+    if (mapped != null) return mapped;
+    for (final folder in draft.folders) {
+      if (folder.name.trim().toLowerCase() ==
+          category.folderName.toLowerCase()) {
+        return folder;
+      }
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final workspaceEnabled = widget.enabled && !_applying;
-    final selectedItems = _draft.itemsInFolder(_selectedFolderId);
+    final selectedItems = _showOnlyErrors
+        ? _organizationErrorItems(_plan, _draft)
+        : _draft.itemsInFolder(_selectedFolderId);
     final localMoveCount = _draft.items
         .where((item) => item.destinationFolderId != null)
         .length;
@@ -337,8 +428,10 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
     final unchangedCount =
         plan?.unchangedCount ?? _draft.items.length - localMoveCount;
     final errorCount = plan?.errorCount ?? (rootMissing ? localMoveCount : 0);
+    final quickCategoryCounts = _unassignedCategoryCounts(plan, _draft);
 
     return desktop_drop.DropTarget(
+      enable: widget.active && workspaceEnabled,
       onDragEntered: (_) {
         if (workspaceEnabled) setState(() => _draggingExternal = true);
       },
@@ -389,6 +482,12 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
                 enabled: workspaceEnabled,
                 onChooseRoot: () => unawaited(_chooseRoot()),
               ),
+              _OrganizationCategoryBar(
+                counts: quickCategoryCounts,
+                enabled: workspaceEnabled && plan != null && !_previewing,
+                previewing: _previewing,
+                onClassify: _classifyUnassigned,
+              ),
               Expanded(
                 child: Row(
                   children: [
@@ -398,9 +497,14 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
                         draft: _draft,
                         plan: plan,
                         selectedFolderId: _selectedFolderId,
+                        showingErrors: _showOnlyErrors,
                         enabled: workspaceEnabled,
-                        onSelectFolder: (folderId) =>
-                            setState(() => _selectedFolderId = folderId),
+                        onSelectFolder: (folderId) => setState(() {
+                          _selectedFolderId = folderId;
+                          _showOnlyErrors = false;
+                        }),
+                        onShowErrors: () =>
+                            setState(() => _showOnlyErrors = true),
                         onMoveItem: _moveItem,
                         onAddFolder: () => unawaited(_addFolder()),
                         onRenameFolder: (folder) =>
@@ -413,6 +517,7 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
                         draft: _draft,
                         plan: plan,
                         folderId: _selectedFolderId,
+                        showingErrors: _showOnlyErrors,
                         items: selectedItems,
                         rootPath: _rootPath,
                         enabled: workspaceEnabled,
@@ -429,6 +534,7 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
                 unchangedCount: unchangedCount,
                 crossVolumeCount: plan?.crossVolumeCount ?? 0,
                 errorCount: errorCount,
+                collisionStrategy: widget.collisionStrategy,
                 previewing: _previewing,
                 applying: _applying,
                 canApply:
@@ -439,6 +545,8 @@ class _OrganizeWorkspaceState extends State<OrganizeWorkspace> {
                     plan.crossVolumeCount == 0 &&
                     (plan.mkdirCount > 0 || plan.moveCount > 0),
                 onApply: () => unawaited(_apply()),
+                onCollisionStrategyChanged: widget.onCollisionStrategyChanged,
+                onShowErrors: () => setState(() => _showOnlyErrors = true),
               ),
             ],
           ],
@@ -585,13 +693,107 @@ class _OrganizationRootBar extends StatelessWidget {
   }
 }
 
+class _OrganizationCategoryBar extends StatelessWidget {
+  const _OrganizationCategoryBar({
+    required this.counts,
+    required this.enabled,
+    required this.previewing,
+    required this.onClassify,
+  });
+
+  final Map<OrganizationCategory, int> counts;
+  final bool enabled;
+  final bool previewing;
+  final ValueChanged<OrganizationCategory?> onClassify;
+
+  @override
+  Widget build(BuildContext context) {
+    final total = counts.values.fold<int>(0, (sum, count) => sum + count);
+    return Container(
+      height: 52,
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      decoration: const BoxDecoration(
+        color: surface,
+        border: Border(bottom: BorderSide(color: border)),
+      ),
+      child: Row(
+        children: [
+          Tooltip(
+            message: 'Go 會先檢查檔案內容特徵，再以副檔名補足分類',
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.auto_awesome_outlined, color: mint, size: 17),
+                const SizedBox(width: 7),
+                Text(
+                  previewing ? '辨識中' : '快速分類',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          FilledButton.tonalIcon(
+            key: const ValueKey('organization-classify-all'),
+            onPressed: enabled && total > 0 ? () => onClassify(null) : null,
+            icon: const Icon(Icons.auto_awesome_rounded, size: 16),
+            label: Text('全部分類${total > 0 ? ' $total' : ''}'),
+            style: FilledButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+            ),
+          ),
+          const SizedBox(width: 10),
+          const VerticalDivider(width: 1, indent: 10, endIndent: 10),
+          const SizedBox(width: 10),
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  for (final category in OrganizationCategory.values) ...[
+                    OutlinedButton.icon(
+                      key: ValueKey(
+                        'organization-classify-${category.wireName}',
+                      ),
+                      onPressed: enabled && (counts[category] ?? 0) > 0
+                          ? () => onClassify(category)
+                          : null,
+                      icon: Icon(_organizationCategoryIcon(category), size: 15),
+                      label: Text(
+                        '${category.folderName} ${counts[category] ?? 0}',
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                      ),
+                    ),
+                    if (category != OrganizationCategory.values.last)
+                      const SizedBox(width: 7),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _OrganizationFolderPanel extends StatelessWidget {
   const _OrganizationFolderPanel({
     required this.draft,
     required this.plan,
     required this.selectedFolderId,
+    required this.showingErrors,
     required this.enabled,
     required this.onSelectFolder,
+    required this.onShowErrors,
     required this.onMoveItem,
     required this.onAddFolder,
     required this.onRenameFolder,
@@ -600,8 +802,10 @@ class _OrganizationFolderPanel extends StatelessWidget {
   final OrganizationWorkspaceDraft draft;
   final OrganizationPlan? plan;
   final String? selectedFolderId;
+  final bool showingErrors;
   final bool enabled;
   final ValueChanged<String?> onSelectFolder;
+  final VoidCallback onShowErrors;
   final void Function(String itemId, String? folderId) onMoveItem;
   final VoidCallback onAddFolder;
   final ValueChanged<VirtualOrganizationFolder> onRenameFolder;
@@ -641,13 +845,24 @@ class _OrganizationFolderPanel extends StatelessWidget {
             child: ListView(
               padding: const EdgeInsets.symmetric(vertical: 8),
               children: [
+                if ((plan?.errorCount ?? 0) > 0)
+                  _OrganizationErrorTarget(
+                    count: plan!.errorCount,
+                    selected: showingErrors,
+                    onSelect: onShowErrors,
+                  ),
                 _OrganizationFolderTarget(
                   key: const ValueKey('organization-folder-root'),
                   label: '未整理（原位置）',
                   count: draft.itemsInFolder(null).length,
-                  selected: selectedFolderId == null,
+                  selected: selectedFolderId == null && !showingErrors,
                   enabled: enabled,
                   virtual: false,
+                  errorCount: _organizationFolderItemErrorCount(
+                    plan,
+                    draft,
+                    null,
+                  ),
                   onSelect: () => onSelectFolder(null),
                   onAcceptItem: (itemId) => onMoveItem(itemId, null),
                 ),
@@ -656,8 +871,13 @@ class _OrganizationFolderPanel extends StatelessWidget {
                     key: ValueKey(folder.id),
                     label: folder.name,
                     count: draft.itemsInFolder(folder.id).length,
-                    selected: selectedFolderId == folder.id,
+                    selected: selectedFolderId == folder.id && !showingErrors,
                     enabled: enabled,
+                    errorCount: _organizationFolderItemErrorCount(
+                      plan,
+                      draft,
+                      folder.id,
+                    ),
                     virtual:
                         _organizationFolderPreview(plan, folder.id)?.created ??
                         true,
@@ -686,6 +906,76 @@ class _OrganizationFolderPanel extends StatelessWidget {
   }
 }
 
+class _OrganizationErrorTarget extends StatelessWidget {
+  const _OrganizationErrorTarget({
+    required this.count,
+    required this.selected,
+    required this.onSelect,
+  });
+
+  final int count;
+  final bool selected;
+  final VoidCallback onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      child: Material(
+        color: selected
+            ? warning.withValues(alpha: 0.13)
+            : warning.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(9),
+        child: InkWell(
+          key: const ValueKey('organization-folder-errors'),
+          onTap: onSelect,
+          borderRadius: BorderRadius.circular(9),
+          child: Container(
+            height: 44,
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(9),
+              border: Border.all(
+                color: selected
+                    ? warning.withValues(alpha: 0.7)
+                    : Colors.transparent,
+              ),
+            ),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.warning_amber_rounded,
+                  color: warning,
+                  size: 17,
+                ),
+                const SizedBox(width: 9),
+                const Expanded(
+                  child: Text(
+                    '全部待處理',
+                    style: TextStyle(
+                      color: warning,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                Text(
+                  '$count',
+                  style: const TextStyle(
+                    color: warning,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _OrganizationFolderTarget extends StatelessWidget {
   const _OrganizationFolderTarget({
     super.key,
@@ -694,6 +984,7 @@ class _OrganizationFolderTarget extends StatelessWidget {
     required this.selected,
     required this.enabled,
     required this.virtual,
+    this.errorCount = 0,
     required this.onSelect,
     required this.onAcceptItem,
     this.onRename,
@@ -706,6 +997,7 @@ class _OrganizationFolderTarget extends StatelessWidget {
   final bool selected;
   final bool enabled;
   final bool virtual;
+  final int errorCount;
   final String? status;
   final String? message;
   final VoidCallback onSelect;
@@ -790,6 +1082,39 @@ class _OrganizationFolderTarget extends StatelessWidget {
                       '$count',
                       style: const TextStyle(color: subtle, fontSize: 10),
                     ),
+                    if (errorCount > 0) ...[
+                      const SizedBox(width: 7),
+                      Container(
+                        key: ValueKey('organization-folder-errors-$label'),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: warning.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.warning_amber_rounded,
+                              color: warning,
+                              size: 11,
+                            ),
+                            const SizedBox(width: 3),
+                            Text(
+                              '$errorCount',
+                              style: const TextStyle(
+                                color: warning,
+                                fontSize: 9,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                     if (onRename != null)
                       IconButton(
                         key: ValueKey('rename-organization-folder-$label'),
@@ -820,6 +1145,7 @@ class _OrganizationItemPanel extends StatelessWidget {
     required this.draft,
     required this.plan,
     required this.folderId,
+    required this.showingErrors,
     required this.items,
     required this.rootPath,
     required this.enabled,
@@ -830,6 +1156,7 @@ class _OrganizationItemPanel extends StatelessWidget {
   final OrganizationWorkspaceDraft draft;
   final OrganizationPlan? plan;
   final String? folderId;
+  final bool showingErrors;
   final List<OrganizationWorkspaceItem> items;
   final String? rootPath;
   final bool enabled;
@@ -839,6 +1166,7 @@ class _OrganizationItemPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final folder = draft.folderById(folderId);
+    final title = showingErrors ? '全部待處理' : folder?.name ?? '未整理（原位置）';
     return Column(
       children: [
         Container(
@@ -852,7 +1180,8 @@ class _OrganizationItemPanel extends StatelessWidget {
             children: [
               Expanded(
                 child: Text(
-                  folder?.name ?? '未整理（原位置）',
+                  title,
+                  key: const ValueKey('organization-item-panel-title'),
                   style: const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.w700,
@@ -868,7 +1197,10 @@ class _OrganizationItemPanel extends StatelessWidget {
         ),
         Expanded(
           child: items.isEmpty
-              ? _OrganizationFolderEmpty(folderName: folder?.name)
+              ? _OrganizationFolderEmpty(
+                  folderName: folder?.name,
+                  showingErrors: showingErrors,
+                )
               : ListView.separated(
                   padding: const EdgeInsets.all(12),
                   itemCount: items.length,
@@ -891,6 +1223,9 @@ class _OrganizationItemPanel extends StatelessWidget {
                       status: preview?.status,
                       message: preview?.message,
                       crossVolume: preview?.crossVolume ?? false,
+                      category: preview?.category,
+                      categoryReason: preview?.categoryReason,
+                      collisionResolved: preview?.collisionResolved ?? false,
                       enabled: enabled,
                       onRevealPath: onRevealPath,
                       onCopyPath: onCopyPath,
@@ -912,6 +1247,9 @@ class _DraggableOrganizationItem extends StatelessWidget {
     required this.status,
     required this.message,
     required this.crossVolume,
+    required this.category,
+    required this.categoryReason,
+    required this.collisionResolved,
     required this.enabled,
     required this.onRevealPath,
     required this.onCopyPath,
@@ -923,6 +1261,9 @@ class _DraggableOrganizationItem extends StatelessWidget {
   final String? status;
   final String? message;
   final bool crossVolume;
+  final OrganizationCategory? category;
+  final String? categoryReason;
+  final bool collisionResolved;
   final bool enabled;
   final ValueChanged<String> onRevealPath;
   final ValueChanged<String> onCopyPath;
@@ -933,6 +1274,8 @@ class _DraggableOrganizationItem extends StatelessWidget {
     final error = status == 'error';
     final statusLabel = error
         ? '待處理'
+        : collisionResolved
+        ? '已加編號'
         : crossVolume
         ? '跨磁碟'
         : moving
@@ -940,6 +1283,8 @@ class _DraggableOrganizationItem extends StatelessWidget {
         : '保留原位';
     final statusColor = error
         ? danger
+        : collisionResolved
+        ? mint
         : crossVolume
         ? warning
         : moving
@@ -961,15 +1306,66 @@ class _DraggableOrganizationItem extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                  ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    if (category case final detectedCategory?) ...[
+                      const SizedBox(width: 8),
+                      Tooltip(
+                        message: _localizedOrganizationCategoryReason(
+                          detectedCategory,
+                          categoryReason,
+                        ),
+                        child: Container(
+                          key: ValueKey('organization-category-${item.id}'),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 7,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: _organizationCategoryColor(
+                              detectedCategory,
+                            ).withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                _organizationCategoryIcon(detectedCategory),
+                                color: _organizationCategoryColor(
+                                  detectedCategory,
+                                ),
+                                size: 11,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                detectedCategory.folderName,
+                                style: TextStyle(
+                                  color: _organizationCategoryColor(
+                                    detectedCategory,
+                                  ),
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
                 if (error) ...[
                   const SizedBox(height: 3),
@@ -1068,9 +1464,10 @@ class _DraggableOrganizationItem extends StatelessWidget {
 }
 
 class _OrganizationFolderEmpty extends StatelessWidget {
-  const _OrganizationFolderEmpty({this.folderName});
+  const _OrganizationFolderEmpty({this.folderName, this.showingErrors = false});
 
   final String? folderName;
+  final bool showingErrors;
 
   @override
   Widget build(BuildContext context) {
@@ -1081,13 +1478,17 @@ class _OrganizationFolderEmpty extends StatelessWidget {
           const Icon(Icons.move_to_inbox_outlined, color: subtle, size: 36),
           const SizedBox(height: 10),
           Text(
-            folderName == null ? '沒有未整理的檔案' : '拖曳檔案到「$folderName」',
+            showingErrors
+                ? '目前沒有待處理項目'
+                : folderName == null
+                ? '沒有未整理的檔案'
+                : '拖曳檔案到「$folderName」',
             style: const TextStyle(color: muted, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 4),
-          const Text(
-            '選擇左側其他位置，即可繼續安排檔案',
-            style: TextStyle(color: subtle, fontSize: 11),
+          Text(
+            showingErrors ? '所有目標路徑均已通過驗證' : '選擇左側其他位置，即可繼續安排檔案',
+            style: const TextStyle(color: subtle, fontSize: 11),
           ),
         ],
       ),
@@ -1102,10 +1503,13 @@ class _OrganizationActionBar extends StatelessWidget {
     required this.unchangedCount,
     required this.crossVolumeCount,
     required this.errorCount,
+    required this.collisionStrategy,
     required this.previewing,
     required this.applying,
     required this.canApply,
     required this.onApply,
+    required this.onCollisionStrategyChanged,
+    required this.onShowErrors,
   });
 
   final int folderCount;
@@ -1113,10 +1517,13 @@ class _OrganizationActionBar extends StatelessWidget {
   final int unchangedCount;
   final int crossVolumeCount;
   final int errorCount;
+  final CollisionStrategy collisionStrategy;
   final bool previewing;
   final bool applying;
   final bool canApply;
   final VoidCallback onApply;
+  final ValueChanged<CollisionStrategy> onCollisionStrategyChanged;
+  final VoidCallback onShowErrors;
 
   @override
   Widget build(BuildContext context) {
@@ -1144,9 +1551,24 @@ class _OrganizationActionBar extends StatelessWidget {
           ],
           if (errorCount > 0) ...[
             const SizedBox(width: 8),
-            _OrganizationCount(label: '待處理', count: errorCount, color: warning),
+            _OrganizationCount(
+              key: const ValueKey('organization-error-count'),
+              label: '待處理',
+              count: errorCount,
+              color: warning,
+              onTap: onShowErrors,
+            ),
           ],
           const Spacer(),
+          SizedBox(
+            width: 168,
+            child: _OrganizationCollisionStrategyPicker(
+              strategy: collisionStrategy,
+              enabled: !previewing && !applying,
+              onChanged: onCollisionStrategyChanged,
+            ),
+          ),
+          const SizedBox(width: 10),
           Tooltip(
             message: crossVolumeCount > 0
                 ? '跨磁碟搬移尚未開放；請改用同一個磁碟的整理根目錄'
@@ -1179,18 +1601,21 @@ class _OrganizationActionBar extends StatelessWidget {
 
 class _OrganizationCount extends StatelessWidget {
   const _OrganizationCount({
+    super.key,
     required this.label,
     required this.count,
     this.color = muted,
+    this.onTap,
   });
 
   final String label;
   final int count;
   final Color color;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    final content = Container(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.08),
@@ -1202,6 +1627,71 @@ class _OrganizationCount extends StatelessWidget {
           color: color,
           fontSize: 10,
           fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+    if (onTap == null) return content;
+    return Tooltip(
+      message: '顯示全部待處理項目',
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: content,
+      ),
+    );
+  }
+}
+
+class _OrganizationCollisionStrategyPicker extends StatelessWidget {
+  const _OrganizationCollisionStrategyPicker({
+    required this.strategy,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final CollisionStrategy strategy;
+  final bool enabled;
+  final ValueChanged<CollisionStrategy> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: switch (strategy) {
+        CollisionStrategy.fail => '安全預設：重複目標會列為待處理並阻止套用',
+        CollisionStrategy.appendNumber => '在副檔名前附加 (2)、(3)…，絕不覆寫原檔',
+      },
+      child: Container(
+        height: 38,
+        padding: const EdgeInsets.symmetric(horizontal: 9),
+        decoration: BoxDecoration(
+          color: const Color(0xFF0E1117),
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: border),
+        ),
+        child: DropdownButtonHideUnderline(
+          child: DropdownButton<CollisionStrategy>(
+            key: const ValueKey('organization-collision-strategy'),
+            value: strategy,
+            isExpanded: true,
+            icon: const Icon(Icons.expand_more_rounded, size: 17),
+            items: CollisionStrategy.values
+                .map(
+                  (value) => DropdownMenuItem(
+                    value: value,
+                    child: Text(
+                      value.label,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                  ),
+                )
+                .toList(growable: false),
+            onChanged: enabled
+                ? (value) {
+                    if (value != null) onChanged(value);
+                  }
+                : null,
+          ),
         ),
       ),
     );
@@ -1417,7 +1907,15 @@ class _OrganizationMessageBar extends StatelessWidget {
   );
 }
 
-({String targetPath, String status, String message, bool crossVolume})?
+({
+  String targetPath,
+  String status,
+  String message,
+  bool crossVolume,
+  OrganizationCategory? category,
+  String categoryReason,
+  bool collisionResolved,
+})?
 _organizationItemPreview(OrganizationPlan? plan, String itemId) {
   if (plan == null) return null;
   final index = plan.itemIds.indexOf(itemId);
@@ -1425,7 +1923,10 @@ _organizationItemPreview(OrganizationPlan? plan, String itemId) {
       index >= plan.targetPaths.length ||
       index >= plan.itemStatuses.length ||
       index >= plan.itemMessages.length ||
-      index >= plan.itemCrossVolume.length) {
+      index >= plan.itemCrossVolume.length ||
+      index >= plan.itemCategories.length ||
+      index >= plan.itemCategoryReasons.length ||
+      index >= plan.itemCollisionResolved.length) {
     return null;
   }
   return (
@@ -1433,13 +1934,133 @@ _organizationItemPreview(OrganizationPlan? plan, String itemId) {
     status: plan.itemStatuses[index],
     message: plan.itemMessages[index],
     crossVolume: plan.itemCrossVolume[index],
+    category: OrganizationCategory.fromWireName(plan.itemCategories[index]),
+    categoryReason: plan.itemCategoryReasons[index],
+    collisionResolved: plan.itemCollisionResolved[index],
   );
+}
+
+List<OrganizationWorkspaceItem> _organizationErrorItems(
+  OrganizationPlan? plan,
+  OrganizationWorkspaceDraft draft,
+) {
+  if (plan == null) return const [];
+  final itemsById = {for (final item in draft.items) item.id: item};
+  final count = math.min(plan.itemIds.length, plan.itemStatuses.length);
+  final result = <OrganizationWorkspaceItem>[];
+  for (var index = 0; index < count; index++) {
+    if (plan.itemStatuses[index] != 'error') continue;
+    final item = itemsById[plan.itemIds[index]];
+    if (item != null) result.add(item);
+  }
+  return result;
+}
+
+int _organizationFolderItemErrorCount(
+  OrganizationPlan? plan,
+  OrganizationWorkspaceDraft draft,
+  String? folderId,
+) {
+  if (plan == null) return 0;
+  final itemsById = {for (final item in draft.items) item.id: item};
+  final count = math.min(plan.itemIds.length, plan.itemStatuses.length);
+  var result = 0;
+  for (var index = 0; index < count; index++) {
+    if (plan.itemStatuses[index] != 'error') continue;
+    final item = itemsById[plan.itemIds[index]];
+    if (item?.destinationFolderId == folderId) result++;
+  }
+  return result;
+}
+
+Map<OrganizationCategory, List<String>> _unassignedCategoryItemIds(
+  OrganizationPlan plan,
+  OrganizationWorkspaceDraft draft,
+) {
+  final result = <OrganizationCategory, List<String>>{
+    for (final category in OrganizationCategory.values) category: <String>[],
+  };
+  final itemsById = {for (final item in draft.items) item.id: item};
+  final count = math.min(plan.itemIds.length, plan.itemCategories.length);
+  for (var index = 0; index < count; index++) {
+    final item = itemsById[plan.itemIds[index]];
+    if (item == null || item.destinationFolderId != null) continue;
+    final category = OrganizationCategory.fromWireName(
+      plan.itemCategories[index],
+    );
+    if (category != null) result[category]!.add(item.id);
+  }
+  return result;
+}
+
+Map<OrganizationCategory, int> _unassignedCategoryCounts(
+  OrganizationPlan? plan,
+  OrganizationWorkspaceDraft draft,
+) {
+  if (plan == null) {
+    return {for (final category in OrganizationCategory.values) category: 0};
+  }
+  return {
+    for (final entry in _unassignedCategoryItemIds(plan, draft).entries)
+      entry.key: entry.value.length,
+  };
+}
+
+IconData _organizationCategoryIcon(OrganizationCategory category) {
+  return switch (category) {
+    OrganizationCategory.image => Icons.image_outlined,
+    OrganizationCategory.video => Icons.movie_outlined,
+    OrganizationCategory.audio => Icons.audio_file_outlined,
+    OrganizationCategory.document => Icons.description_outlined,
+    OrganizationCategory.archive => Icons.archive_outlined,
+    OrganizationCategory.other => Icons.more_horiz_rounded,
+  };
+}
+
+Color _organizationCategoryColor(OrganizationCategory category) {
+  return switch (category) {
+    OrganizationCategory.image => primaryBright,
+    OrganizationCategory.video => danger,
+    OrganizationCategory.audio => mint,
+    OrganizationCategory.document => const Color(0xFF60A5FA),
+    OrganizationCategory.archive => warning,
+    OrganizationCategory.other => muted,
+  };
+}
+
+String _localizedOrganizationCategoryReason(
+  OrganizationCategory category,
+  String? reason,
+) {
+  final label = category.folderName;
+  if (reason == null || reason == 'unknown') {
+    return '沒有找到明確特徵，歸入「$label」供你確認';
+  }
+  if (reason == 'unreadable') {
+    return '無法讀取內容特徵，歸入「$label」供你確認';
+  }
+  const combinedPrefix = 'content+extension:';
+  if (reason.startsWith(combinedPrefix)) {
+    final details = reason.substring(combinedPrefix.length).split(':');
+    final extension = details.isEmpty ? '' : details.last;
+    return '由檔案內容與 $extension 副檔名判斷為「$label」';
+  }
+  const contentPrefix = 'content:';
+  if (reason.startsWith(contentPrefix)) {
+    return '由檔案內容特徵（${reason.substring(contentPrefix.length)}）判斷為「$label」';
+  }
+  const extensionPrefix = 'extension:';
+  if (reason.startsWith(extensionPrefix)) {
+    return '由 ${reason.substring(extensionPrefix.length)} 副檔名判斷為「$label」';
+  }
+  return 'Flick 判斷此檔案屬於「$label」';
 }
 
 String _friendlyOrganizationError(Object error) {
   if (error is RpcException) {
     return switch (error.code) {
       'invalid_organization' => '整理計畫資料不一致，請重新加入檔案後再試',
+      'invalid_collision_strategy' => '不支援這個衝突處理方式，請重新選擇',
       'invalid_organization_root' => '請先選擇有效的整理根目錄',
       'organization_root_unavailable' => '整理根目錄不存在或無法讀取',
       'organization_root_required' => '整理根目錄必須是一般資料夾，不能是連結',

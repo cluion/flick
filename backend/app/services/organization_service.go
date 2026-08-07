@@ -27,11 +27,21 @@ type OrganizationItemInput struct {
 	DestinationFolderID string
 }
 
+type OrganizationPreviewOptions struct {
+	CollisionStrategy string
+}
+
 type OrganizationService interface {
 	Preview(
 		rootPath string,
 		folders []OrganizationFolderInput,
 		items []OrganizationItemInput,
+	) (models.FilesystemOperationPlan, error)
+	PreviewWithOptions(
+		rootPath string,
+		folders []OrganizationFolderInput,
+		items []OrganizationItemInput,
+		options OrganizationPreviewOptions,
 	) (models.FilesystemOperationPlan, error)
 	Prepare(planID string) (models.FilesystemOperationBatch, error)
 	Apply(planID string) (models.FilesystemOperationBatch, error)
@@ -91,6 +101,20 @@ func (service *organizationService) Preview(
 	folders []OrganizationFolderInput,
 	items []OrganizationItemInput,
 ) (models.FilesystemOperationPlan, error) {
+	return service.PreviewWithOptions(
+		rootPath,
+		folders,
+		items,
+		OrganizationPreviewOptions{},
+	)
+}
+
+func (service *organizationService) PreviewWithOptions(
+	rootPath string,
+	folders []OrganizationFolderInput,
+	items []OrganizationItemInput,
+	options OrganizationPreviewOptions,
+) (models.FilesystemOperationPlan, error) {
 	service.mu.Lock()
 	defer service.mu.Unlock()
 
@@ -98,6 +122,12 @@ func (service *organizationService) Preview(
 		service.plans = make(map[string]models.FilesystemOperationPlan)
 	}
 	service.expirePlans()
+	collisionStrategy, err := normalizeCollisionStrategy(
+		options.CollisionStrategy,
+	)
+	if err != nil {
+		return models.FilesystemOperationPlan{}, err
+	}
 	if len(folders) > maxOrganizationFolders {
 		return models.FilesystemOperationPlan{}, userError(
 			"too_many_folders",
@@ -202,10 +232,101 @@ func (service *organizationService) Preview(
 		plan.Items = append(plan.Items, item)
 	}
 	markDuplicateOrganizationSources(plan.Items, sourceIndexes)
+	if collisionStrategy == CollisionStrategyAppendNumber {
+		resolveOrganizationTargetsWithNumbers(plan.Items)
+	}
 	validateOrganizationTargets(plan.Items)
 	plan.Operations = buildOrganizationOperations(plan.Folders, plan.Items)
 	service.plans[plan.ID] = plan
 	return plan, nil
+}
+
+func resolveOrganizationTargetsWithNumbers(
+	items []models.PlannedOrganizationItem,
+) {
+	sourceByKey := make(map[string]int, len(items))
+	reservedTargets := make(map[string]struct{}, len(items))
+	for index, item := range items {
+		if item.Status == models.OperationStatusError {
+			continue
+		}
+		sourceByKey[comparablePath(item.SourcePath)] = index
+		if item.Status == models.OperationStatusUnchanged {
+			reservedTargets[comparablePath(item.TargetPath)] = struct{}{}
+		}
+	}
+	for index := range items {
+		item := &items[index]
+		if item.Status != models.OperationStatusReady {
+			continue
+		}
+		available, err := organizationCollisionTargetAvailable(
+			item.TargetPath,
+			sourceByKey,
+			reservedTargets,
+			items,
+		)
+		if err != nil {
+			item.Status = models.OperationStatusError
+			item.Message = "The target path cannot be inspected."
+			continue
+		}
+		if available {
+			reservedTargets[comparablePath(item.TargetPath)] = struct{}{}
+			continue
+		}
+		resolved := false
+		for number := 2; number <= maxCollisionAttempts+1; number++ {
+			candidatePath := filepath.Join(
+				filepath.Dir(item.TargetPath),
+				numberedCollisionName(filepath.Base(item.TargetPath), number),
+			)
+			available, err = organizationCollisionTargetAvailable(
+				candidatePath,
+				sourceByKey,
+				reservedTargets,
+				items,
+			)
+			if err != nil {
+				item.Status = models.OperationStatusError
+				item.Message = "The target path cannot be inspected."
+				break
+			}
+			if !available {
+				continue
+			}
+			item.TargetPath = candidatePath
+			item.CollisionResolved = true
+			reservedTargets[comparablePath(candidatePath)] = struct{}{}
+			resolved = true
+			break
+		}
+		if !resolved && item.Status != models.OperationStatusError {
+			item.Status = models.OperationStatusError
+			item.Message = "No available numbered target name could be found."
+		}
+	}
+}
+
+func organizationCollisionTargetAvailable(
+	targetPath string,
+	sourceByKey map[string]int,
+	reservedTargets map[string]struct{},
+	items []models.PlannedOrganizationItem,
+) (bool, error) {
+	key := comparablePath(targetPath)
+	if _, reserved := reservedTargets[key]; reserved {
+		return false, nil
+	}
+	if _, err := os.Lstat(targetPath); err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	sourceIndex, belongsToPlan := sourceByKey[key]
+	return belongsToPlan &&
+		items[sourceIndex].Status == models.OperationStatusReady, nil
 }
 
 func validateOrganizationRoot(path string) (string, error) {
@@ -319,6 +440,9 @@ func (service *organizationService) inspectPlannedItem(
 	}
 	item.Size = info.Size()
 	item.ModifiedAt = info.ModTime().UnixNano()
+	item.Category, item.CategoryReason = detectOrganizationFileCategory(
+		item.SourcePath,
+	)
 	if item.DestinationFolderID == "" {
 		item.Status = models.OperationStatusUnchanged
 		item.Message = "The file will remain in its original location."
