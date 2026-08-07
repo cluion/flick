@@ -2,7 +2,7 @@
 
 import 'package:bridra_flutter/bridra_flutter.dart';
 
-const supportedBackendProtocolVersion = 3;
+const supportedBackendProtocolVersion = 4;
 
 abstract final class BridraMethods {
   static const systemHealth = 'system.health';
@@ -61,6 +61,7 @@ class PreviewRenameRequest {
   const PreviewRenameRequest({
     required this.paths,
     required this.recipe,
+    required this.collisionStrategy,
     required this.excludedPaths,
     required this.overridePaths,
     required this.overrideNames,
@@ -68,6 +69,7 @@ class PreviewRenameRequest {
 
   final List<String> paths;
   final String recipe;
+  final String collisionStrategy;
   final List<String> excludedPaths;
   final List<String> overridePaths;
   final List<String> overrideNames;
@@ -75,6 +77,7 @@ class PreviewRenameRequest {
   Map<String, Object?> toJson() => {
     'paths': paths,
     'recipe': recipe,
+    'collisionStrategy': collisionStrategy,
     'excludedPaths': excludedPaths,
     'overridePaths': overridePaths,
     'overrideNames': overrideNames,
@@ -92,6 +95,7 @@ class RenamePlan {
     required this.messages,
     required this.included,
     required this.overridden,
+    required this.collisionResolved,
     required this.sizes,
     required this.modifiedAt,
     required this.renameableCount,
@@ -109,6 +113,7 @@ class RenamePlan {
   final List<String> messages;
   final List<bool> included;
   final List<bool> overridden;
+  final List<bool> collisionResolved;
   final List<int> sizes;
   final List<int> modifiedAt;
   final int renameableCount;
@@ -270,6 +275,7 @@ class BridraRpcApi implements BridraApi {
         messages: _requireListField<String>(result, 'messages'),
         included: _requireListField<bool>(result, 'included'),
         overridden: _requireListField<bool>(result, 'overridden'),
+        collisionResolved: _requireListField<bool>(result, 'collisionResolved'),
         sizes: _requireListField<int>(result, 'sizes'),
         modifiedAt: _requireListField<int>(result, 'modifiedAt'),
         renameableCount: _requireField<int>(result, 'renameableCount'),

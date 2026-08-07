@@ -16,21 +16,22 @@ type ScanDirectoriesResponse struct {
 }
 
 type RenamePlanResponse struct {
-	PlanId          string   `json:"planId"`
-	SourcePaths     []string `json:"sourcePaths"`
-	OriginalNames   []string `json:"originalNames"`
-	ProposedNames   []string `json:"proposedNames"`
-	TargetPaths     []string `json:"targetPaths"`
-	Statuses        []string `json:"statuses"`
-	Messages        []string `json:"messages"`
-	Included        []bool   `json:"included"`
-	Overridden      []bool   `json:"overridden"`
-	Sizes           []int    `json:"sizes"`
-	ModifiedAt      []int    `json:"modifiedAt"`
-	RenameableCount int      `json:"renameableCount"`
-	UnchangedCount  int      `json:"unchangedCount"`
-	ErrorCount      int      `json:"errorCount"`
-	ExcludedCount   int      `json:"excludedCount"`
+	PlanId            string   `json:"planId"`
+	SourcePaths       []string `json:"sourcePaths"`
+	OriginalNames     []string `json:"originalNames"`
+	ProposedNames     []string `json:"proposedNames"`
+	TargetPaths       []string `json:"targetPaths"`
+	Statuses          []string `json:"statuses"`
+	Messages          []string `json:"messages"`
+	Included          []bool   `json:"included"`
+	Overridden        []bool   `json:"overridden"`
+	CollisionResolved []bool   `json:"collisionResolved"`
+	Sizes             []int    `json:"sizes"`
+	ModifiedAt        []int    `json:"modifiedAt"`
+	RenameableCount   int      `json:"renameableCount"`
+	UnchangedCount    int      `json:"unchangedCount"`
+	ErrorCount        int      `json:"errorCount"`
+	ExcludedCount     int      `json:"excludedCount"`
 }
 
 type ApplyRenameResponse struct {

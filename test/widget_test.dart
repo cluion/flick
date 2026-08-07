@@ -48,7 +48,7 @@ class FakeBackend implements BackendGateway {
     return const HealthInfo(
       status: 'ok',
       frameworkVersion: '0.11.0',
-      protocolVersion: 3,
+      protocolVersion: 4,
       runtime: 'Go sidecar',
       architecture: 'Middleware -> Controller -> Service',
     );
@@ -90,6 +90,20 @@ class FakeBackend implements BackendGateway {
     final proposedNames = request.paths
         .map((path) => overrides[path] ?? 'final.txt')
         .toList(growable: false);
+    final collisionResolved = List.filled(request.paths.length, false);
+    if (request.collisionStrategy == 'appendNumber') {
+      final assigned = <String>{};
+      for (var index = 0; index < proposedNames.length; index++) {
+        final original = proposedNames[index];
+        var candidate = original;
+        var sequence = 2;
+        while (!assigned.add(candidate)) {
+          candidate = _numberedName(original, sequence++);
+          collisionResolved[index] = true;
+        }
+        proposedNames[index] = candidate;
+      }
+    }
     return RenamePlan(
       planId: 'plan-1',
       sourcePaths: request.paths,
@@ -104,6 +118,7 @@ class FakeBackend implements BackendGateway {
       overridden: request.paths
           .map(overrides.containsKey)
           .toList(growable: false),
+      collisionResolved: collisionResolved,
       sizes: List.generate(
         request.paths.length,
         (index) => (request.paths.length - index) * 10,
@@ -123,6 +138,12 @@ class FakeBackend implements BackendGateway {
 
   static String _fileName(String path) {
     return path.split(RegExp(r'[/\\]')).last;
+  }
+
+  static String _numberedName(String name, int sequence) {
+    final dot = name.lastIndexOf('.');
+    if (dot <= 0) return '$name ($sequence)';
+    return '${name.substring(0, dot)} ($sequence)${name.substring(dot)}';
   }
 
   @override
@@ -223,7 +244,7 @@ void main() {
     expect(find.text('v0.3.0 (4)'), findsOneWidget);
     expect(find.text('本機引擎就緒'), findsOneWidget);
     expect(
-      find.byTooltip('Go sidecar · Bridra 0.11.0 · Protocol 3'),
+      find.byTooltip('Go sidecar · Bridra 0.11.0 · Protocol 4'),
       findsOneWidget,
     );
     expect(find.text('改名規則'), findsOneWidget);
@@ -781,6 +802,53 @@ void main() {
     );
     expect(find.text('清單'), findsOneWidget);
     expect(find.text('加入'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('previews and remembers safe append-number collisions', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(800, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final directory = Directory.systemTemp.createTempSync('flick-collision-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final files = ['one.txt', 'two.txt']
+        .map((name) => File('${directory.path}/$name')..writeAsStringSync(name))
+        .toList(growable: false);
+    final backend = FakeBackend();
+
+    await tester.pumpWidget(FlickApp(connector: () async => backend));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('檔案預覽'));
+    await tester.pumpAndSettle();
+    await _dropFiles(
+      tester,
+      files.map((file) => file.path).toList(growable: false),
+      backend,
+    );
+    await _pumpAsyncWork(tester);
+
+    expect(backend.lastPreviewRequest?.collisionStrategy, 'fail');
+    expect(find.text('發現衝突時阻止'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('collision-strategy')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('自動附加流水號').last);
+    await _pumpAsyncWork(tester);
+
+    expect(backend.lastPreviewRequest?.collisionStrategy, 'appendNumber');
+    expect(find.text('final (2).txt'), findsOneWidget);
+    expect(
+      find.byKey(ValueKey('collision-resolved-${files[1].path}')),
+      findsOneWidget,
+    );
+    expect(find.text('已避開衝突'), findsOneWidget);
+    expect(
+      await SharedPreferencesAsync().getString('flick.collision-strategy.v1'),
+      'appendNumber',
+    );
     expect(tester.takeException(), isNull);
   });
 

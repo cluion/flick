@@ -36,16 +36,17 @@ type RenameRecipe struct {
 }
 
 type RenameItem struct {
-	SourcePath   string
-	OriginalName string
-	ProposedName string
-	TargetPath   string
-	Status       string
-	Message      string
-	Included     bool
-	Overridden   bool
-	Size         int64
-	ModifiedAt   int64
+	SourcePath        string
+	OriginalName      string
+	ProposedName      string
+	TargetPath        string
+	Status            string
+	Message           string
+	Included          bool
+	Overridden        bool
+	CollisionResolved bool
+	Size              int64
+	ModifiedAt        int64
 }
 
 type RenamePlan struct {

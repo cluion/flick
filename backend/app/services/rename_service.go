@@ -22,10 +22,14 @@ import (
 )
 
 const (
-	maxRenameItems = 10_000
-	maxRenameRules = 32
-	planLifetime   = 15 * time.Minute
-	historyLimit   = 100
+	maxRenameItems       = 10_000
+	maxRenameRules       = 32
+	maxCollisionAttempts = 10_000
+	planLifetime         = 15 * time.Minute
+	historyLimit         = 100
+
+	CollisionStrategyFail         = "fail"
+	CollisionStrategyAppendNumber = "appendNumber"
 )
 
 type RenameService interface {
@@ -40,9 +44,10 @@ type RenameService interface {
 }
 
 type RenamePreviewOptions struct {
-	ExcludedPaths []string
-	OverridePaths []string
-	OverrideNames []string
+	CollisionStrategy string
+	ExcludedPaths     []string
+	OverridePaths     []string
+	OverrideNames     []string
 }
 
 type RenameUserError struct {
@@ -156,14 +161,15 @@ func (service *renameService) Preview(
 		seenSources[sourceKey] = struct{}{}
 		plan.Items = append(plan.Items, item)
 	}
-	validatePlanCollisions(plan.Items)
+	validatePlanCollisions(plan.Items, customizations.collisionStrategy)
 	service.plans[plan.ID] = plan
 	return plan, nil
 }
 
 type previewCustomizations struct {
-	excluded  map[string]struct{}
-	overrides map[string]string
+	collisionStrategy string
+	excluded          map[string]struct{}
+	overrides         map[string]string
 }
 
 func preparePreviewCustomizations(
@@ -171,8 +177,9 @@ func preparePreviewCustomizations(
 	options []RenamePreviewOptions,
 ) (previewCustomizations, error) {
 	result := previewCustomizations{
-		excluded:  make(map[string]struct{}),
-		overrides: make(map[string]string),
+		collisionStrategy: CollisionStrategyFail,
+		excluded:          make(map[string]struct{}),
+		overrides:         make(map[string]string),
 	}
 	if len(options) == 0 {
 		return result, nil
@@ -184,6 +191,11 @@ func preparePreviewCustomizations(
 		)
 	}
 	option := options[0]
+	strategy, err := normalizeCollisionStrategy(option.CollisionStrategy)
+	if err != nil {
+		return result, err
+	}
+	result.collisionStrategy = strategy
 	if len(option.OverridePaths) != len(option.OverrideNames) {
 		return result, userError(
 			"invalid_overrides",
@@ -221,6 +233,20 @@ func preparePreviewCustomizations(
 		result.overrides[key] = option.OverrideNames[index]
 	}
 	return result, nil
+}
+
+func normalizeCollisionStrategy(value string) (string, error) {
+	switch value {
+	case "", CollisionStrategyFail:
+		return CollisionStrategyFail, nil
+	case CollisionStrategyAppendNumber:
+		return CollisionStrategyAppendNumber, nil
+	default:
+		return "", userError(
+			"invalid_collision_strategy",
+			"Choose a supported collision strategy.",
+		)
+	}
 }
 
 func comparableInputPath(path string) string {
@@ -906,7 +932,15 @@ func invalidFileNameMessage(name string) string {
 	return ""
 }
 
-func validatePlanCollisions(items []models.RenameItem) {
+func validatePlanCollisions(items []models.RenameItem, strategy string) {
+	if strategy == CollisionStrategyAppendNumber {
+		resolvePlanCollisionsWithNumbers(items)
+		return
+	}
+	failPlanCollisions(items)
+}
+
+func failPlanCollisions(items []models.RenameItem) {
 	sourceByKey := make(map[string]int, len(items))
 	for index, item := range items {
 		if !item.Included {
@@ -949,6 +983,100 @@ func validatePlanCollisions(items []models.RenameItem) {
 			item.Message = "A file with this name already exists."
 		}
 	}
+}
+
+func resolvePlanCollisionsWithNumbers(items []models.RenameItem) {
+	sourceByKey := make(map[string]int, len(items))
+	for index, item := range items {
+		if item.Included {
+			sourceByKey[comparablePath(item.SourcePath)] = index
+		}
+	}
+
+	reservedTargets := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		if item.Included && item.Status == models.RenameStatusUnchanged {
+			reservedTargets[comparablePath(item.TargetPath)] = struct{}{}
+		}
+	}
+
+	for index := range items {
+		item := &items[index]
+		if !item.Included || item.Status != models.RenameStatusReady {
+			continue
+		}
+
+		available, err := collisionTargetAvailable(
+			item.TargetPath,
+			sourceByKey,
+			reservedTargets,
+			items,
+		)
+		if err != nil {
+			item.Status = models.RenameStatusError
+			item.Message = "The destination cannot be inspected."
+			continue
+		}
+		if available {
+			reservedTargets[comparablePath(item.TargetPath)] = struct{}{}
+			continue
+		}
+
+		resolved := false
+		for number := 2; number <= maxCollisionAttempts+1; number++ {
+			candidateName := numberedCollisionName(item.ProposedName, number)
+			candidatePath := filepath.Join(filepath.Dir(item.SourcePath), candidateName)
+			available, err = collisionTargetAvailable(
+				candidatePath,
+				sourceByKey,
+				reservedTargets,
+				items,
+			)
+			if err != nil {
+				item.Status = models.RenameStatusError
+				item.Message = "The destination cannot be inspected."
+				break
+			}
+			if !available {
+				continue
+			}
+			item.ProposedName = candidateName
+			item.TargetPath = candidatePath
+			item.CollisionResolved = true
+			reservedTargets[comparablePath(candidatePath)] = struct{}{}
+			resolved = true
+			break
+		}
+		if !resolved && item.Status != models.RenameStatusError {
+			item.Status = models.RenameStatusError
+			item.Message = "No available numbered file name could be found."
+		}
+	}
+}
+
+func collisionTargetAvailable(
+	targetPath string,
+	sourceByKey map[string]int,
+	reservedTargets map[string]struct{},
+	items []models.RenameItem,
+) (bool, error) {
+	key := comparablePath(targetPath)
+	if _, reserved := reservedTargets[key]; reserved {
+		return false, nil
+	}
+	if _, err := os.Lstat(targetPath); err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	sourceIndex, belongsToBatch := sourceByKey[key]
+	return belongsToBatch && items[sourceIndex].Status == models.RenameStatusReady, nil
+}
+
+func numberedCollisionName(name string, number int) string {
+	stem, extension := splitFileName(name)
+	return joinFileName(fmt.Sprintf("%s (%d)", stem, number), extension)
 }
 
 func validateSourcesUnchanged(items []models.RenameItem) error {

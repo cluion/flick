@@ -18,11 +18,12 @@ func (ScanDirectoriesRequest) ValidatePayload(payload []byte) error {
 }
 
 type PreviewRenameRequest struct {
-	Paths         []string `json:"paths"`
-	Recipe        string   `json:"recipe"`
-	ExcludedPaths []string `json:"excludedPaths"`
-	OverridePaths []string `json:"overridePaths"`
-	OverrideNames []string `json:"overrideNames"`
+	Paths             []string `json:"paths"`
+	Recipe            string   `json:"recipe"`
+	CollisionStrategy string   `json:"collisionStrategy"`
+	ExcludedPaths     []string `json:"excludedPaths"`
+	OverridePaths     []string `json:"overridePaths"`
+	OverrideNames     []string `json:"overrideNames"`
 }
 
 func (PreviewRenameRequest) ValidatePayload(payload []byte) error {

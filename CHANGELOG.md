@@ -4,6 +4,17 @@ All notable changes to Flick are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- A safe collision strategy that appends `(2)`, `(3)`, and later numbers before
+  the file extension while preserving the original file
+- Exact collision-resolved names and status badges in the live preview
+
+### Changed
+
+- Advanced the rename preview contract to RPC Protocol 4 so the selected
+  collision strategy and resolved items are explicit across Flutter and Go
+
 ## 0.3.0 - 2026-08-06
 
 ### Added

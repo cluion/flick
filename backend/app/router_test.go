@@ -20,10 +20,11 @@ func TestGeneratedApplicationPipeline(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 	params, err := json.Marshal(map[string]any{
-		"paths":         []string{path},
-		"excludedPaths": []string{},
-		"overridePaths": []string{path},
-		"overrideNames": []string{"chosen.txt"},
+		"paths":             []string{path},
+		"collisionStrategy": "fail",
+		"excludedPaths":     []string{},
+		"overridePaths":     []string{path},
+		"overrideNames":     []string{"chosen.txt"},
 		"recipe": `{"rules":[{"type":"replace","enabled":true,` +
 			`"value":"draft","replacement":"final"}]}`,
 	})
@@ -47,13 +48,14 @@ func TestGeneratedApplicationPipeline(t *testing.T) {
 		t.Fatalf("marshal result: %v", err)
 	}
 	var result struct {
-		ProposedNames   []string `json:"proposedNames"`
-		Included        []bool   `json:"included"`
-		Overridden      []bool   `json:"overridden"`
-		Sizes           []int    `json:"sizes"`
-		ModifiedAt      []int    `json:"modifiedAt"`
-		RenameableCount int      `json:"renameableCount"`
-		ExcludedCount   int      `json:"excludedCount"`
+		ProposedNames     []string `json:"proposedNames"`
+		Included          []bool   `json:"included"`
+		Overridden        []bool   `json:"overridden"`
+		CollisionResolved []bool   `json:"collisionResolved"`
+		Sizes             []int    `json:"sizes"`
+		ModifiedAt        []int    `json:"modifiedAt"`
+		RenameableCount   int      `json:"renameableCount"`
+		ExcludedCount     int      `json:"excludedCount"`
 	}
 	if err := json.Unmarshal(encoded, &result); err != nil {
 		t.Fatalf("unmarshal result: %v", err)
@@ -61,6 +63,7 @@ func TestGeneratedApplicationPipeline(t *testing.T) {
 	if len(result.ProposedNames) != 1 || result.ProposedNames[0] != "chosen.txt" ||
 		len(result.Included) != 1 || !result.Included[0] ||
 		len(result.Overridden) != 1 || !result.Overridden[0] ||
+		len(result.CollisionResolved) != 1 || result.CollisionResolved[0] ||
 		len(result.Sizes) != 1 || result.Sizes[0] != len("draft") ||
 		len(result.ModifiedAt) != 1 || result.ModifiedAt[0] <= 0 ||
 		result.RenameableCount != 1 || result.ExcludedCount != 0 {

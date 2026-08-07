@@ -468,6 +468,116 @@ func TestRenameServiceRejectsCollisionBeforeApply(t *testing.T) {
 	}
 }
 
+func TestRenameServiceAppendsNumbersForExistingAndBatchCollisions(t *testing.T) {
+	directory := t.TempDir()
+	first := writeRenameFixture(t, directory, "first.txt", "first")
+	second := writeRenameFixture(t, directory, "second.txt", "second")
+	writeRenameFixture(t, directory, "photo.txt", "existing")
+	writeRenameFixture(t, directory, "photo (2).txt", "existing numbered")
+	service := NewRenameServiceAt(filepath.Join(directory, "history.json"))
+
+	plan, err := service.Preview(
+		[]string{first, second},
+		`{"rules":[{"type":"newName","enabled":true,"value":"photo"}]}`,
+		RenamePreviewOptions{CollisionStrategy: CollisionStrategyAppendNumber},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	want := []string{"photo (3).txt", "photo (4).txt"}
+	for index, item := range plan.Items {
+		if item.Status != "ready" || item.ProposedName != want[index] ||
+			!item.CollisionResolved {
+			t.Fatalf("item %d = %#v, want resolved %q", index, item, want[index])
+		}
+	}
+
+	batch, err := service.Apply(plan.ID)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	assertPathMissing(t, first)
+	assertPathMissing(t, second)
+	assertPathExists(t, filepath.Join(directory, "photo.txt"))
+	assertPathExists(t, filepath.Join(directory, "photo (2).txt"))
+	assertPathExists(t, filepath.Join(directory, "photo (3).txt"))
+	assertPathExists(t, filepath.Join(directory, "photo (4).txt"))
+
+	if _, err := service.Undo(batch.ID); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	assertPathExists(t, first)
+	assertPathExists(t, second)
+	assertPathMissing(t, filepath.Join(directory, "photo (3).txt"))
+	assertPathMissing(t, filepath.Join(directory, "photo (4).txt"))
+}
+
+func TestRenameServiceReservesUnchangedNamesBeforeNumbering(t *testing.T) {
+	directory := t.TempDir()
+	draft := writeRenameFixture(t, directory, "draft.txt", "draft")
+	photo := writeRenameFixture(t, directory, "photo.txt", "photo")
+	service := NewRenameServiceAt(filepath.Join(directory, "history.json"))
+
+	plan, err := service.Preview(
+		[]string{draft, photo},
+		`{"rules":[{"type":"newName","enabled":true,"value":"photo"}]}`,
+		RenamePreviewOptions{CollisionStrategy: CollisionStrategyAppendNumber},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if got := plan.Items[0].ProposedName; got != "photo (2).txt" ||
+		!plan.Items[0].CollisionResolved {
+		t.Fatalf("draft item = %#v", plan.Items[0])
+	}
+	if plan.Items[1].Status != "unchanged" || plan.Items[1].CollisionResolved {
+		t.Fatalf("photo item = %#v", plan.Items[1])
+	}
+}
+
+func TestRenameServiceRechecksNumberedTargetBeforeApply(t *testing.T) {
+	directory := t.TempDir()
+	source := writeRenameFixture(t, directory, "draft.txt", "draft")
+	writeRenameFixture(t, directory, "final.txt", "existing")
+	service := NewRenameServiceAt(filepath.Join(directory, "history.json"))
+
+	plan, err := service.Preview(
+		[]string{source},
+		`{"rules":[{"type":"newName","enabled":true,"value":"final"}]}`,
+		RenamePreviewOptions{CollisionStrategy: CollisionStrategyAppendNumber},
+	)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if got := plan.Items[0].ProposedName; got != "final (2).txt" {
+		t.Fatalf("proposed name = %q", got)
+	}
+	writeRenameFixture(t, directory, "final (2).txt", "late conflict")
+
+	_, err = service.Apply(plan.ID)
+	var userError *RenameUserError
+	if !errors.As(err, &userError) || userError.Code != "target_changed" {
+		t.Fatalf("apply error = %v", err)
+	}
+	assertPathExists(t, source)
+}
+
+func TestRenameServiceRejectsUnknownCollisionStrategy(t *testing.T) {
+	directory := t.TempDir()
+	source := writeRenameFixture(t, directory, "draft.txt", "draft")
+	service := NewRenameServiceAt(filepath.Join(directory, "history.json"))
+
+	_, err := service.Preview(
+		[]string{source},
+		`{"rules":[]}`,
+		RenamePreviewOptions{CollisionStrategy: "overwrite"},
+	)
+	var userError *RenameUserError
+	if !errors.As(err, &userError) || userError.Code != "invalid_collision_strategy" {
+		t.Fatalf("preview error = %v", err)
+	}
+}
+
 func TestRenameServiceRejectsSourceChangedAfterPreview(t *testing.T) {
 	directory := t.TempDir()
 	source := writeRenameFixture(t, directory, "draft.txt", "draft")

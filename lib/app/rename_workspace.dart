@@ -11,6 +11,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/backend_gateway.dart';
+import '../domain/collision_strategy.dart';
 import '../domain/directory_import_options.dart';
 import '../domain/file_list_io.dart';
 import '../domain/preview_list_options.dart';
@@ -25,6 +26,7 @@ import 'flick_app.dart';
 const _savedRulesKey = 'flick.rename-rules.v2';
 const _savedRulePresetsKey = 'flick.rule-presets.v1';
 const _savedRuleHistoryKey = 'flick.rule-history.v1';
+const _savedCollisionStrategyKey = 'flick.collision-strategy.v1';
 const _maxRulePresetFileBytes = 5 * 1024 * 1024;
 const _maxRuleRecipeFileBytes = 1024 * 1024;
 const _maxRenameItems = 10000;
@@ -67,6 +69,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
   List<RenameRule> _rules = [RenameRule.create(RenameRuleType.newName)];
   List<RulePreset> _rulePresets = const [];
   List<RuleConfigurationSnapshot> _ruleHistory = const [];
+  CollisionStrategy _collisionStrategy = CollisionStrategy.fail;
   Future<void> _rulePresetSaveQueue = Future.value();
   Future<void> _ruleHistorySaveQueue = Future.value();
   Timer? _previewTimer;
@@ -139,6 +142,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     List<RenameRule>? rules;
     List<RulePreset>? presets;
     List<RuleConfigurationSnapshot>? ruleHistory;
+    CollisionStrategy? collisionStrategy;
     try {
       final saved = await preferences.getString(_savedRulesKey);
       if (saved != null) rules = decodeSavedRules(saved);
@@ -159,11 +163,21 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     } on Object {
       // A damaged rule-history snapshot must not block other preferences.
     }
+    try {
+      collisionStrategy = CollisionStrategy.fromWireName(
+        await preferences.getString(_savedCollisionStrategyKey),
+      );
+    } on Object {
+      // Collision handling safely falls back to blocking conflicts.
+    }
     if (!mounted) return;
     setState(() {
       if (rules != null && rules.isNotEmpty) _rules = rules;
       if (presets != null) _rulePresets = presets;
       if (ruleHistory case final history?) _ruleHistory = history;
+      if (collisionStrategy case final strategy?) {
+        _collisionStrategy = strategy;
+      }
     });
   }
 
@@ -173,6 +187,18 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
       await preferences.setString(_savedRulesKey, encodeSavedRules(_rules));
     } on Object {
       // Preview and rename remain available if preference storage is unavailable.
+    }
+  }
+
+  Future<void> _saveCollisionStrategy() async {
+    try {
+      final preferences = SharedPreferencesAsync();
+      await preferences.setString(
+        _savedCollisionStrategyKey,
+        _collisionStrategy.wireName,
+      );
+    } on Object {
+      // Renaming remains available if preference storage is unavailable.
     }
   }
 
@@ -743,6 +769,16 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
     });
   }
 
+  void _setCollisionStrategy(CollisionStrategy strategy) {
+    if (strategy == _collisionStrategy) return;
+    setState(() {
+      _collisionStrategy = strategy;
+      _notice = null;
+    });
+    unawaited(_saveCollisionStrategy());
+    _schedulePreview(immediate: true);
+  }
+
   bool get _processingOrderVisible =>
       _previewQuery.isEmpty &&
       _previewSortField == PreviewSortField.addedOrder &&
@@ -1146,6 +1182,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
         PreviewRenameRequest(
           paths: _paths,
           recipe: encodeRenameRecipe(_rules),
+          collisionStrategy: _collisionStrategy.wireName,
           excludedPaths: _paths
               .where(_excludedPaths.contains)
               .toList(growable: false),
@@ -1369,6 +1406,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                       searchQuery: _previewQuery,
                       sortField: _previewSortField,
                       sortAscending: _previewSortAscending,
+                      collisionStrategy: _collisionStrategy,
                       excludedPaths: _excludedPaths,
                       overridePaths: _nameOverrides.keys.toSet(),
                       selectedPaths: _selectedPaths,
@@ -1396,6 +1434,7 @@ class _RenameWorkspaceState extends State<RenameWorkspace> {
                       onClearSearch: _clearPreviewQuery,
                       onSortFieldChanged: _setPreviewSortField,
                       onToggleSortDirection: _togglePreviewSortDirection,
+                      onCollisionStrategyChanged: _setCollisionStrategy,
                       processingOrderVisible: _processingOrderVisible,
                       enabledOrderMoves: {
                         for (final move in PreviewOrderMove.values)
@@ -3513,6 +3552,7 @@ class _PreviewPanel extends StatelessWidget {
     required this.searchQuery,
     required this.sortField,
     required this.sortAscending,
+    required this.collisionStrategy,
     required this.excludedPaths,
     required this.overridePaths,
     required this.selectedPaths,
@@ -3540,6 +3580,7 @@ class _PreviewPanel extends StatelessWidget {
     required this.onClearSearch,
     required this.onSortFieldChanged,
     required this.onToggleSortDirection,
+    required this.onCollisionStrategyChanged,
     required this.processingOrderVisible,
     required this.enabledOrderMoves,
     required this.onShowProcessingOrder,
@@ -3562,6 +3603,7 @@ class _PreviewPanel extends StatelessWidget {
   final String searchQuery;
   final PreviewSortField sortField;
   final bool sortAscending;
+  final CollisionStrategy collisionStrategy;
   final Set<String> excludedPaths;
   final Set<String> overridePaths;
   final Set<String> selectedPaths;
@@ -3589,6 +3631,7 @@ class _PreviewPanel extends StatelessWidget {
   final VoidCallback onClearSearch;
   final ValueChanged<PreviewSortField> onSortFieldChanged;
   final VoidCallback onToggleSortDirection;
+  final ValueChanged<CollisionStrategy> onCollisionStrategyChanged;
   final bool processingOrderVisible;
   final Set<PreviewOrderMove> enabledOrderMoves;
   final VoidCallback onShowProcessingOrder;
@@ -3619,6 +3662,7 @@ class _PreviewPanel extends StatelessWidget {
             currentPlan.messages.length,
             currentPlan.included.length,
             currentPlan.overridden.length,
+            currentPlan.collisionResolved.length,
           ].reduce(math.min);
     final canApply =
         connected &&
@@ -3721,6 +3765,7 @@ class _PreviewPanel extends StatelessWidget {
                   query: searchQuery,
                   sortField: sortField,
                   ascending: sortAscending,
+                  collisionStrategy: collisionStrategy,
                   visibleCount: displayedIndices.length,
                   totalCount: rowCount,
                   enabled: !applying && !scanning,
@@ -3728,6 +3773,7 @@ class _PreviewPanel extends StatelessWidget {
                   onClearSearch: onClearSearch,
                   onSortFieldChanged: onSortFieldChanged,
                   onToggleSortDirection: onToggleSortDirection,
+                  onCollisionStrategyChanged: onCollisionStrategyChanged,
                 ),
               Expanded(
                 child: paths.isEmpty
@@ -3789,6 +3835,10 @@ class _PreviewPanel extends StatelessWidget {
                                               ),
                                               overridden: overridePaths
                                                   .contains(inputPath),
+                                              collisionResolved:
+                                                  currentPlan
+                                                      ?.collisionResolved[index] ??
+                                                  false,
                                               selected: selectedPaths.contains(
                                                 inputPath,
                                               ),
@@ -3864,6 +3914,7 @@ class _PreviewTools extends StatelessWidget {
     required this.query,
     required this.sortField,
     required this.ascending,
+    required this.collisionStrategy,
     required this.visibleCount,
     required this.totalCount,
     required this.enabled,
@@ -3871,12 +3922,14 @@ class _PreviewTools extends StatelessWidget {
     required this.onClearSearch,
     required this.onSortFieldChanged,
     required this.onToggleSortDirection,
+    required this.onCollisionStrategyChanged,
   });
 
   final TextEditingController controller;
   final String query;
   final PreviewSortField sortField;
   final bool ascending;
+  final CollisionStrategy collisionStrategy;
   final int visibleCount;
   final int totalCount;
   final bool enabled;
@@ -3884,6 +3937,7 @@ class _PreviewTools extends StatelessWidget {
   final VoidCallback onClearSearch;
   final ValueChanged<PreviewSortField> onSortFieldChanged;
   final VoidCallback onToggleSortDirection;
+  final ValueChanged<CollisionStrategy> onCollisionStrategyChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -3894,69 +3948,38 @@ class _PreviewTools extends StatelessWidget {
         color: surface,
         border: Border(bottom: BorderSide(color: border)),
       ),
-      child: Row(
-        children: [
-          Expanded(
-            child: TextField(
-              key: const ValueKey('preview-search'),
-              controller: controller,
-              enabled: enabled,
-              onChanged: onSearchChanged,
-              decoration: InputDecoration(
-                hintText: '搜尋檔名或路徑',
-                prefixIcon: const Icon(Icons.search_rounded, size: 18),
-                suffixIcon: query.isEmpty
-                    ? null
-                    : IconButton(
-                        onPressed: onClearSearch,
-                        tooltip: '清除搜尋',
-                        icon: const Icon(Icons.close_rounded, size: 17),
-                      ),
-                isDense: true,
-                contentPadding: const EdgeInsets.symmetric(vertical: 9),
-              ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final search = TextField(
+            key: const ValueKey('preview-search'),
+            controller: controller,
+            enabled: enabled,
+            onChanged: onSearchChanged,
+            decoration: InputDecoration(
+              hintText: '搜尋檔名或路徑',
+              prefixIcon: const Icon(Icons.search_rounded, size: 18),
+              suffixIcon: query.isEmpty
+                  ? null
+                  : IconButton(
+                      onPressed: onClearSearch,
+                      tooltip: '清除搜尋',
+                      icon: const Icon(Icons.close_rounded, size: 17),
+                    ),
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(vertical: 9),
             ),
-          ),
-          const SizedBox(width: 9),
-          Tooltip(
-            message: '其他排序只改變顯示；處理順序會影響流水號與名稱清單對應',
-            child: Container(
-              width: 150,
-              height: 38,
-              padding: const EdgeInsets.symmetric(horizontal: 10),
-              decoration: BoxDecoration(
-                color: const Color(0xFF0E1117),
-                borderRadius: BorderRadius.circular(9),
-                border: Border.all(color: border),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<PreviewSortField>(
-                  key: const ValueKey('preview-sort-field'),
-                  value: sortField,
-                  isExpanded: true,
-                  icon: const Icon(Icons.expand_more_rounded, size: 18),
-                  items: PreviewSortField.values
-                      .map(
-                        (field) => DropdownMenuItem(
-                          value: field,
-                          child: Text(
-                            field.label,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                        ),
-                      )
-                      .toList(growable: false),
-                  onChanged: enabled
-                      ? (field) {
-                          if (field != null) onSortFieldChanged(field);
-                        }
-                      : null,
-                ),
-              ),
-            ),
-          ),
-          IconButton(
+          );
+          final collision = _CollisionStrategyPicker(
+            strategy: collisionStrategy,
+            enabled: enabled,
+            onChanged: onCollisionStrategyChanged,
+          );
+          final sort = _PreviewSortPicker(
+            field: sortField,
+            enabled: enabled,
+            onChanged: onSortFieldChanged,
+          );
+          final direction = IconButton(
             onPressed: enabled ? onToggleSortDirection : null,
             tooltip: ascending ? '改為降冪排序' : '改為升冪排序',
             icon: Icon(
@@ -3965,16 +3988,154 @@ class _PreviewTools extends StatelessWidget {
                   : Icons.arrow_downward_rounded,
               size: 18,
             ),
-          ),
-          SizedBox(
-            width: 72,
+          );
+          final count = SizedBox(
+            width: 64,
             child: Text(
               '$visibleCount / $totalCount',
               textAlign: TextAlign.right,
               style: const TextStyle(color: subtle, fontSize: 11),
             ),
+          );
+
+          if (constraints.maxWidth < 700) {
+            return Column(
+              children: [
+                search,
+                const SizedBox(height: 7),
+                Row(
+                  children: [
+                    Expanded(child: collision),
+                    const SizedBox(width: 8),
+                    Expanded(child: sort),
+                    direction,
+                    count,
+                  ],
+                ),
+              ],
+            );
+          }
+          return Row(
+            children: [
+              Expanded(child: search),
+              const SizedBox(width: 9),
+              SizedBox(width: 184, child: collision),
+              const SizedBox(width: 9),
+              SizedBox(width: 150, child: sort),
+              direction,
+              count,
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _CollisionStrategyPicker extends StatelessWidget {
+  const _CollisionStrategyPicker({
+    required this.strategy,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final CollisionStrategy strategy;
+  final bool enabled;
+  final ValueChanged<CollisionStrategy> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: switch (strategy) {
+        CollisionStrategy.fail => '安全預設：發現重複目標時阻止套用',
+        CollisionStrategy.appendNumber => '在副檔名前附加 (2)、(3)…，絕不覆寫原檔',
+      },
+      child: Container(
+        height: 38,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        decoration: BoxDecoration(
+          color: const Color(0xFF0E1117),
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: border),
+        ),
+        child: DropdownButtonHideUnderline(
+          child: DropdownButton<CollisionStrategy>(
+            key: const ValueKey('collision-strategy'),
+            value: strategy,
+            isExpanded: true,
+            icon: const Icon(Icons.expand_more_rounded, size: 18),
+            items: CollisionStrategy.values
+                .map(
+                  (value) => DropdownMenuItem(
+                    value: value,
+                    child: Text(
+                      value.label,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                )
+                .toList(growable: false),
+            onChanged: enabled
+                ? (value) {
+                    if (value != null) onChanged(value);
+                  }
+                : null,
           ),
-        ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PreviewSortPicker extends StatelessWidget {
+  const _PreviewSortPicker({
+    required this.field,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final PreviewSortField field;
+  final bool enabled;
+  final ValueChanged<PreviewSortField> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: '其他排序只改變顯示；處理順序會影響流水號與名稱清單對應',
+      child: Container(
+        height: 38,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        decoration: BoxDecoration(
+          color: const Color(0xFF0E1117),
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: border),
+        ),
+        child: DropdownButtonHideUnderline(
+          child: DropdownButton<PreviewSortField>(
+            key: const ValueKey('preview-sort-field'),
+            value: field,
+            isExpanded: true,
+            icon: const Icon(Icons.expand_more_rounded, size: 18),
+            items: PreviewSortField.values
+                .map(
+                  (value) => DropdownMenuItem(
+                    value: value,
+                    child: Text(
+                      value.label,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                )
+                .toList(growable: false),
+            onChanged: enabled
+                ? (value) {
+                    if (value != null) onChanged(value);
+                  }
+                : null,
+          ),
+        ),
       ),
     );
   }
@@ -4307,6 +4468,7 @@ class _PreviewRow extends StatelessWidget {
     required this.message,
     required this.included,
     required this.overridden,
+    required this.collisionResolved,
     required this.selected,
     required this.active,
     required this.previewFailed,
@@ -4326,6 +4488,7 @@ class _PreviewRow extends StatelessWidget {
   final String? message;
   final bool included;
   final bool overridden;
+  final bool collisionResolved;
   final bool selected;
   final bool active;
   final bool previewFailed;
@@ -4508,6 +4671,17 @@ class _PreviewRow extends StatelessWidget {
                                 ),
                               ),
                             ],
+                            if (collisionResolved) ...[
+                              const SizedBox(width: 6),
+                              Text(
+                                '流水號',
+                                key: ValueKey('collision-resolved-$sourcePath'),
+                                style: const TextStyle(
+                                  color: warning,
+                                  fontSize: 9,
+                                ),
+                              ),
+                            ],
                             if (onEditName != null) ...[
                               const SizedBox(width: 5),
                               const Tooltip(
@@ -4532,6 +4706,8 @@ class _PreviewRow extends StatelessWidget {
                         ? '已排除'
                         : message?.isNotEmpty == true
                         ? message!
+                        : collisionResolved
+                        ? '已避開衝突'
                         : switch (state) {
                             'ready' => '可套用',
                             'unchanged' => '無變更',

@@ -29,9 +29,10 @@ func (controller *RenameController) Preview(ctx *framework.Context) (any, error)
 		request.Paths,
 		request.Recipe,
 		services.RenamePreviewOptions{
-			ExcludedPaths: request.ExcludedPaths,
-			OverridePaths: request.OverridePaths,
-			OverrideNames: request.OverrideNames,
+			CollisionStrategy: request.CollisionStrategy,
+			ExcludedPaths:     request.ExcludedPaths,
+			OverridePaths:     request.OverridePaths,
+			OverrideNames:     request.OverrideNames,
 		},
 	)
 	if err != nil {
@@ -97,17 +98,18 @@ func (controller *RenameController) History(*framework.Context) (any, error) {
 
 func newRenamePlanResponse(plan models.RenamePlan) responses.RenamePlanResponse {
 	response := responses.RenamePlanResponse{
-		PlanId:        plan.ID,
-		SourcePaths:   make([]string, 0, len(plan.Items)),
-		OriginalNames: make([]string, 0, len(plan.Items)),
-		ProposedNames: make([]string, 0, len(plan.Items)),
-		TargetPaths:   make([]string, 0, len(plan.Items)),
-		Statuses:      make([]string, 0, len(plan.Items)),
-		Messages:      make([]string, 0, len(plan.Items)),
-		Included:      make([]bool, 0, len(plan.Items)),
-		Overridden:    make([]bool, 0, len(plan.Items)),
-		Sizes:         make([]int, 0, len(plan.Items)),
-		ModifiedAt:    make([]int, 0, len(plan.Items)),
+		PlanId:            plan.ID,
+		SourcePaths:       make([]string, 0, len(plan.Items)),
+		OriginalNames:     make([]string, 0, len(plan.Items)),
+		ProposedNames:     make([]string, 0, len(plan.Items)),
+		TargetPaths:       make([]string, 0, len(plan.Items)),
+		Statuses:          make([]string, 0, len(plan.Items)),
+		Messages:          make([]string, 0, len(plan.Items)),
+		Included:          make([]bool, 0, len(plan.Items)),
+		Overridden:        make([]bool, 0, len(plan.Items)),
+		CollisionResolved: make([]bool, 0, len(plan.Items)),
+		Sizes:             make([]int, 0, len(plan.Items)),
+		ModifiedAt:        make([]int, 0, len(plan.Items)),
 	}
 	for _, item := range plan.Items {
 		response.SourcePaths = append(response.SourcePaths, item.SourcePath)
@@ -118,6 +120,10 @@ func newRenamePlanResponse(plan models.RenamePlan) responses.RenamePlanResponse 
 		response.Messages = append(response.Messages, item.Message)
 		response.Included = append(response.Included, item.Included)
 		response.Overridden = append(response.Overridden, item.Overridden)
+		response.CollisionResolved = append(
+			response.CollisionResolved,
+			item.CollisionResolved,
+		)
 		response.Sizes = append(response.Sizes, int(item.Size))
 		response.ModifiedAt = append(response.ModifiedAt, int(item.ModifiedAt))
 		if !item.Included {
