@@ -90,9 +90,10 @@ jobs:
         run: |
           response="$(printf '%s\n' '{"id":"smoke","method":"system.health","meta":{"token":"smoke-token"}}' | \
             build/linux/x64/release/bundle/libexec/bridra_backend --token smoke-token)"
+          expected_protocol="$(python3 -c 'import json; print(json.load(open("schema/bridra.json"))["protocolVersion"])')"
           echo "$response"
           echo "$response" | grep -q '"status":"ok"'
-          echo "$response" | grep -q '"protocolVersion":3'
+          echo "$response" | grep -q "\"protocolVersion\":$expected_protocol"
 
       - name: Smoke-test macOS bundle
         if: matrix.target == 'macos'
@@ -100,9 +101,10 @@ jobs:
         run: |
           response="$(printf '%s\n' '{"id":"smoke","method":"system.health","meta":{"token":"smoke-token"}}' | \
             build/macos/Build/Products/Release/flick.app/Contents/MacOS/libexec/bridra_backend --token smoke-token)"
+          expected_protocol="$(python3 -c 'import json; print(json.load(open("schema/bridra.json"))["protocolVersion"])')"
           echo "$response"
           echo "$response" | grep -q '"status":"ok"'
-          echo "$response" | grep -q '"protocolVersion":3'
+          echo "$response" | grep -q "\"protocolVersion\":$expected_protocol"
 
       - name: Smoke-test Windows bundle
         if: matrix.target == 'windows'
@@ -114,7 +116,8 @@ jobs:
             throw "Bundled Go sidecar failed with exit code $LASTEXITCODE"
           }
           $message = $response | ConvertFrom-Json
-          if ($message.result.status -ne "ok" -or $message.result.protocolVersion -ne 3) {
+          $expectedProtocol = (Get-Content "schema\bridra.json" -Raw | ConvertFrom-Json).protocolVersion
+          if ($message.result.status -ne "ok" -or $message.result.protocolVersion -ne $expectedProtocol) {
             throw "Bundled Go sidecar returned an invalid health response"
           }
           $response

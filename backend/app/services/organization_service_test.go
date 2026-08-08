@@ -188,13 +188,16 @@ func TestOrganizationServiceAppendsNumbersToOrganizationCollisions(t *testing.T)
 	}
 	if plan.Items[0].Status != models.OperationStatusReady ||
 		plan.Items[1].Status != models.OperationStatusReady ||
+		plan.Items[0].Category != models.OrganizationCategoryDocument ||
+		plan.Items[1].Category != models.OrganizationCategoryDocument ||
 		plan.Items[0].TargetPath != filepath.Join(root, "Sorted", "same.txt") ||
 		plan.Items[0].CollisionResolved ||
 		plan.Items[1].TargetPath != filepath.Join(root, "Sorted", "same (2).txt") ||
 		!plan.Items[1].CollisionResolved {
 		t.Fatalf("numbered plan = %#v", plan.Items)
 	}
-	if _, err := service.Apply(plan.ID); err != nil {
+	applied, err := service.Apply(plan.ID)
+	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	firstContent, firstErr := os.ReadFile(filepath.Join(root, "Sorted", "same.txt"))
@@ -210,6 +213,29 @@ func TestOrganizationServiceAppendsNumbersToOrganizationCollisions(t *testing.T)
 			firstErr,
 			secondErr,
 		)
+	}
+	undone, err := service.Undo(applied.ID)
+	if err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	if undone.State != models.FilesystemBatchStateUndone ||
+		undone.RemovedFolderCount != 1 {
+		t.Fatalf("undone batch = %#v", undone)
+	}
+	firstContent, firstErr = os.ReadFile(first)
+	secondContent, secondErr = os.ReadFile(second)
+	if firstErr != nil || secondErr != nil || string(firstContent) != "first" ||
+		string(secondContent) != "second" {
+		t.Fatalf(
+			"restored sources first=%q second=%q firstErr=%v secondErr=%v",
+			firstContent,
+			secondContent,
+			firstErr,
+			secondErr,
+		)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "Sorted")); !os.IsNotExist(err) {
+		t.Fatalf("numbered destination survived undo: %v", err)
 	}
 }
 

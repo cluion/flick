@@ -458,13 +458,13 @@ void main() {
     await tester.pumpWidget(
       FlickApp(
         connector: () async => FakeBackend(),
-        versionLoader: () async => 'v0.3.0 (4)',
+        versionLoader: () async => 'v0.4.0 (5)',
       ),
     );
     await tester.pumpAndSettle();
 
     expect(find.text('Flick'), findsOneWidget);
-    expect(find.text('v0.3.0 (4)'), findsOneWidget);
+    expect(find.text('v0.4.0 (5)'), findsOneWidget);
     expect(find.text('本機引擎就緒'), findsOneWidget);
     expect(
       find.byTooltip('Go sidecar · Bridra 0.11.0 · Protocol 9'),

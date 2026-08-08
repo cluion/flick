@@ -4,6 +4,8 @@ All notable changes to Flick are documented in this file.
 
 ## Unreleased
 
+## 0.4.0 - 2026-08-08
+
 ### Added
 
 - A safe collision strategy that appends `(2)`, `(3)`, and later numbers before
@@ -20,6 +22,14 @@ All notable changes to Flick are documented in this file.
 - Confirmed same-volume organization apply with journaled folder creation,
   staged cycle-safe moves, automatic rollback when execution fails, and startup
   recovery for interrupted batches
+- Organization history and safe undo that restore moved files through staging,
+  remove only empty Flick-created folders, and recover interrupted undo attempts
+- Explainable quick categories for images, videos, audio, documents, archives,
+  and other files using content signatures with extension fallback
+- One-click category assignment that preserves every manual folder placement
+- A global pending-item view and per-folder error badges for organization plans
+- Explicit organization collision handling that either fails safely or appends
+  `(2)`, `(3)`, and later numbers without overwriting an existing item
 
 ### Changed
 
@@ -29,6 +39,14 @@ All notable changes to Flick are documented in this file.
   organization plans without enabling filesystem changes
 - Advanced the organization contract to RPC Protocol 6 for safe same-volume
   apply while explicitly blocking cross-volume execution
+- Advanced the organization contract to RPC Protocol 7 for history and undo,
+  Protocol 8 for explainable file categories, and Protocol 9 for explicit
+  collision strategies and resolved target paths
+
+### Fixed
+
+- Disabled hidden workspace drop targets and guarded duplicate drop events so a
+  dragged directory opens exactly one scan confirmation dialog
 
 ## 0.3.0 - 2026-08-06
 
