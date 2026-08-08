@@ -1418,7 +1418,7 @@ void main() {
     FileSelectorPlatform.instance = selector;
     addTearDown(() => FileSelectorPlatform.instance = originalSelector);
     final directory = Directory.systemTemp.createTempSync('flick-widget-');
-    addTearDown(() => directory.deleteSync(recursive: true));
+    addTearDown(() => _deleteTestDirectory(directory));
     final files = ['one.txt', 'two.txt']
         .map((name) => File('${directory.path}/$name')..writeAsStringSync(name))
         .toList(growable: false);
@@ -1510,6 +1510,11 @@ void main() {
     expect(backend.lastPreviewRequest?.overrideNames, ['chosen.txt']);
     expect(find.text('chosen.txt'), findsOneWidget);
     expect(find.text('1 已排除'), findsOneWidget);
+    selector
+      ..openFileResult = null
+      ..saveLocationResult = null;
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
   });
 
   testWidgets('keeps the empty workspace inside a compact window', (
@@ -2125,6 +2130,19 @@ Future<void> _dragTo(WidgetTester tester, Finder source, Finder target) {
     tester.getCenter(target) - tester.getCenter(source),
     const Duration(milliseconds: 500),
   );
+}
+
+Future<void> _deleteTestDirectory(Directory directory) async {
+  for (var attempt = 0; attempt < 10; attempt++) {
+    if (!directory.existsSync()) return;
+    try {
+      await directory.delete(recursive: true);
+      return;
+    } on FileSystemException {
+      if (attempt == 9) rethrow;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+  }
 }
 
 Future<void> _dropFile(WidgetTester tester, String path, FakeBackend backend) {

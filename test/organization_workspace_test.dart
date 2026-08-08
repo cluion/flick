@@ -93,7 +93,10 @@ void main() {
 
     expect(
       organizationTargetPath(draft: draft, item: item, rootPath: '/downloads'),
-      joinOrganizationPath('/downloads/圖片', 'photo.jpg'),
+      joinOrganizationPath(
+        joinOrganizationPath('/downloads', '圖片'),
+        'photo.jpg',
+      ),
     );
     expect(
       organizationTargetPath(draft: draft, item: item, rootPath: null),
